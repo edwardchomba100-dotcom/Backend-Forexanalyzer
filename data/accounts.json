@@ -1,0 +1,34 @@
+{
+  "accounts": [
+    {
+      "accountId": "67190235",
+      "config": {
+        "alias": "67190235",
+        "role": "MASTER",
+        "masterAccountId": null,
+        "lotMultiplier": 1,
+        "useFixedLot": false,
+        "fixedLotSize": 0.01,
+        "copySL": true,
+        "copyTP": true,
+        "active": true,
+        "commandFile": "C:\\Users\\IAN\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\commands_67190235.json"
+      }
+    },
+    {
+      "accountId": "57438456",
+      "config": {
+        "alias": "57438456",
+        "role": "SLAVE",
+        "masterAccountId": "67190235",
+        "lotMultiplier": 1,
+        "useFixedLot": false,
+        "fixedLotSize": 0.01,
+        "copySL": true,
+        "copyTP": true,
+        "active": true,
+        "commandFile": "C:\\Users\\IAN\\AppData\\Roaming\\MetaQuotes\\Terminal\\Common\\Files\\commands_57438456.json"
+      }
+    }
+  ]
+}

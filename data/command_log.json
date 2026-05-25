@@ -1,0 +1,1021 @@
+{
+  "commands": [
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777625524618,
+      "timestamp": 1777625524,
+      "account_id": "57438456",
+      "command_id": "cmd_1777625524616_6z5ra"
+    },
+    {
+      "action": "RELOAD_SETTINGS",
+      "logged_at": 1777625524447,
+      "timestamp": 1777625524,
+      "account_id": "57438456",
+      "command_id": "cmd_1777625524442_tk8cl"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777625524424,
+      "timestamp": 1777625524,
+      "account_id": "57438456",
+      "command_id": "cmd_1777625524409_0i5ot"
+    },
+    {
+      "action": "RELOAD_SETTINGS",
+      "logged_at": 1777625524133,
+      "timestamp": 1777625524,
+      "account_id": "67190235",
+      "command_id": "cmd_1777625524130_0lkuo"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 1,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "logged_at": 1777621149869,
+      "timestamp": 1777621149,
+      "account_id": "67190235",
+      "command_id": "cmd_1777621149863_g2vja",
+      "order_type": "BUY"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777555767609,
+      "timestamp": 1777555767,
+      "account_id": "67190235",
+      "command_id": "cmd_1777555767605_30zuy"
+    },
+    {
+      "action": "RELOAD_SETTINGS",
+      "logged_at": 1777555766133,
+      "timestamp": 1777555766,
+      "account_id": "57438456",
+      "command_id": "cmd_1777555766126_e2xwr"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777555660480,
+      "timestamp": 1777555660,
+      "account_id": "57438456",
+      "command_id": "cmd_1777555660447_b4ojc"
+    },
+    {
+      "action": "RELOAD_SETTINGS",
+      "logged_at": 1777555658300,
+      "timestamp": 1777555658,
+      "account_id": "57438456",
+      "command_id": "cmd_1777555658293_z4ca7"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777555658262,
+      "timestamp": 1777555658,
+      "account_id": "57438456",
+      "command_id": "cmd_1777555658254_zg4h4"
+    },
+    {
+      "action": "RELOAD_SETTINGS",
+      "logged_at": 1777555657048,
+      "timestamp": 1777555657,
+      "account_id": "67190235",
+      "command_id": "cmd_1777555657043_d9mpn"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777555440777,
+      "timestamp": 1777555440,
+      "account_id": "67190235",
+      "command_id": "cmd_1777555440774_9jid4"
+    },
+    {
+      "action": "RELOAD_SETTINGS",
+      "logged_at": 1777555439560,
+      "timestamp": 1777555439,
+      "account_id": "67190235",
+      "command_id": "cmd_1777555439548_9f8we"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777555439531,
+      "timestamp": 1777555439,
+      "account_id": "67190235",
+      "command_id": "cmd_1777555439526_z33yt"
+    },
+    {
+      "action": "RELOAD_SETTINGS",
+      "logged_at": 1777555438305,
+      "timestamp": 1777555438,
+      "account_id": "57438456",
+      "command_id": "cmd_1777555438291_7vvcr"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777555410906,
+      "timestamp": 1777555410,
+      "account_id": "57438456",
+      "command_id": "cmd_1777555410905_ojk44"
+    },
+    {
+      "action": "PAUSE_TRADING",
+      "logged_at": 1777555400383,
+      "timestamp": 1777555400,
+      "account_id": "57438456",
+      "command_id": "cmd_1777555400382_jvkvm"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777550729274,
+      "timestamp": 1777550729,
+      "account_id": "57438456",
+      "command_id": "cmd_1777550729270_u00ep"
+    },
+    {
+      "action": "RELOAD_SETTINGS",
+      "logged_at": 1777550726389,
+      "timestamp": 1777550726,
+      "account_id": "57438456",
+      "command_id": "cmd_1777550726379_exjvx"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777550726366,
+      "timestamp": 1777550726,
+      "account_id": "57438456",
+      "command_id": "cmd_1777550726359_l1nd6"
+    },
+    {
+      "action": "RELOAD_SETTINGS",
+      "logged_at": 1777229670188,
+      "timestamp": 1777229670,
+      "account_id": "67190235",
+      "command_id": "cmd_1777229670184_i6k0b"
+    },
+    {
+      "action": "RELOAD_SETTINGS",
+      "logged_at": 1777228993015,
+      "timestamp": 1777228993,
+      "account_id": "67190235",
+      "command_id": "cmd_1777228993009_br5w0"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777228919488,
+      "timestamp": 1777228919,
+      "account_id": "67190235",
+      "command_id": "cmd_1777228919480_g23vq"
+    },
+    {
+      "action": "RELOAD_SETTINGS",
+      "logged_at": 1777228919432,
+      "timestamp": 1777228919,
+      "account_id": "67190235",
+      "command_id": "cmd_1777228919430_gb6a1"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777228919425,
+      "timestamp": 1777228919,
+      "account_id": "67190235",
+      "command_id": "cmd_1777228919414_jt531"
+    },
+    {
+      "action": "RELOAD_SETTINGS",
+      "logged_at": 1777228887424,
+      "timestamp": 1777228887,
+      "account_id": "67184578",
+      "command_id": "cmd_1777228887409_b2y89"
+    },
+    {
+      "action": "RELOAD_SETTINGS",
+      "logged_at": 1777228834529,
+      "timestamp": 1777228834,
+      "account_id": "67190235",
+      "command_id": "cmd_1777228834525_xjpqi"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777135217663,
+      "timestamp": 1777135217,
+      "account_id": "67184578",
+      "command_id": "cmd_1777135217661_elw5i"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777135217547,
+      "timestamp": 1777135217,
+      "account_id": "67184578",
+      "command_id": "cmd_1777135217539_93dok"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777135188263,
+      "timestamp": 1777135188,
+      "account_id": "67184578",
+      "command_id": "cmd_1777135188235_6jvam"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777135188120,
+      "timestamp": 1777135188,
+      "account_id": "67184578",
+      "command_id": "cmd_1777135188113_g87sj"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777135053089,
+      "timestamp": 1777135053,
+      "account_id": "67190235",
+      "command_id": "cmd_1777135053080_3xho3"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1777135052779,
+      "timestamp": 1777135052,
+      "account_id": "67190235",
+      "command_id": "cmd_1777135052772_lhpwz"
+    },
+    {
+      "action": "CLOSE_ALL",
+      "logged_at": 1776945014552,
+      "timestamp": 1776945014,
+      "account_id": "57438456",
+      "command_id": "cmd_1776945014549_gmxot"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776931905247,
+      "timestamp": 1776931905,
+      "account_id": "67190235",
+      "command_id": "cmd_1776931905244_twv3x"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776931905102,
+      "timestamp": 1776931905,
+      "account_id": "67190235",
+      "command_id": "cmd_1776931905098_g70pc"
+    },
+    {
+      "action": "CLOSE_ALL",
+      "logged_at": 1776928391743,
+      "timestamp": 1776928391,
+      "account_id": "67184567",
+      "command_id": "cmd_1776928391631_jleur"
+    },
+    {
+      "action": "CLOSE_ALL",
+      "logged_at": 1776927670400,
+      "timestamp": 1776927670,
+      "account_id": "67184567",
+      "command_id": "cmd_1776927670396_4msh6"
+    },
+    {
+      "action": "CLOSE_ALL",
+      "logged_at": 1776927654747,
+      "timestamp": 1776927654,
+      "account_id": "67184567",
+      "command_id": "cmd_1776927654741_eq5ja"
+    },
+    {
+      "action": "CLOSE_ALL",
+      "logged_at": 1776926884713,
+      "timestamp": 1776926884,
+      "account_id": "67184567",
+      "command_id": "cmd_1776926884709_kex84"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776887506933,
+      "timestamp": 1776887506,
+      "account_id": "67184578",
+      "command_id": "cmd_1776887506932_hizci"
+    },
+    {
+      "action": "PAUSE_TRADING",
+      "logged_at": 1776887503765,
+      "timestamp": 1776887503,
+      "account_id": "67184578",
+      "command_id": "cmd_1776887503764_9r8wp"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776887495492,
+      "timestamp": 1776887495,
+      "account_id": "67184567",
+      "command_id": "cmd_1776887495489_v7thr"
+    },
+    {
+      "action": "PAUSE_TRADING",
+      "logged_at": 1776887492061,
+      "timestamp": 1776887492,
+      "account_id": "67184567",
+      "command_id": "cmd_1776887492056_wyzy5"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776885549990,
+      "timestamp": 1776885549,
+      "account_id": "67184567",
+      "command_id": "cmd_1776885549985_028r7"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776885549965,
+      "timestamp": 1776885549,
+      "account_id": "67184567",
+      "command_id": "cmd_1776885549961_otzvg"
+    },
+    {
+      "action": "CLOSE_ALL",
+      "logged_at": 1776878236369,
+      "timestamp": 1776878236,
+      "account_id": "67184567",
+      "command_id": "cmd_1776878236368_0ib3e"
+    },
+    {
+      "action": "CLOSE_ALL",
+      "logged_at": 1776878236353,
+      "timestamp": 1776878236,
+      "account_id": "67184578",
+      "command_id": "cmd_1776878236352_s2v1q"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776878227727,
+      "timestamp": 1776878227,
+      "account_id": "67184567",
+      "command_id": "cmd_1776878227722_vvj45"
+    },
+    {
+      "action": "CLOSE_ALL",
+      "logged_at": 1776878078553,
+      "timestamp": 1776878078,
+      "account_id": "67184567",
+      "command_id": "cmd_1776878078545_iiv6t"
+    },
+    {
+      "action": "CLOSE_ALL",
+      "logged_at": 1776878078432,
+      "timestamp": 1776878078,
+      "account_id": "67184578",
+      "command_id": "cmd_1776878078419_oxjtj"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776784650650,
+      "timestamp": 1776784650,
+      "account_id": "67184567",
+      "command_id": "cmd_1776784650645_fmm7y"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776784650300,
+      "timestamp": 1776784650,
+      "account_id": "67184567",
+      "command_id": "cmd_1776784650284_20p6u"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776783253368,
+      "timestamp": 1776783253,
+      "account_id": "67184567",
+      "command_id": "cmd_1776783253364_szsry"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776783253246,
+      "timestamp": 1776783253,
+      "account_id": "67184567",
+      "command_id": "cmd_1776783253224_bgta3"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "XAUUSD",
+      "comment": "TV_COPY|M:67184578|T:657855058",
+      "logged_at": 1776773438310,
+      "timestamp": 1776773438,
+      "account_id": "67184567",
+      "command_id": "cmd_1776773438308_x8u45",
+      "order_type": "MARKET_SELL",
+      "magic_offset": 1000,
+      "master_ticket": "657855058"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "XAUUSD",
+      "comment": "TV_COPY|M:67184578|T:657854993",
+      "logged_at": 1776773418825,
+      "timestamp": 1776773418,
+      "account_id": "67184567",
+      "command_id": "cmd_1776773418823_pa7yw",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "657854993"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "XAUUSD",
+      "comment": "TV_COPY|M:67184578|T:657851818",
+      "logged_at": 1776773370825,
+      "timestamp": 1776773370,
+      "account_id": "67184567",
+      "command_id": "cmd_1776773370813_t5koj",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "657851818"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776773369998,
+      "timestamp": 1776773369,
+      "account_id": "67184567",
+      "command_id": "cmd_1776773369990_itg70"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776773369936,
+      "timestamp": 1776773369,
+      "account_id": "67184567",
+      "command_id": "cmd_1776773369927_zsu7f"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "XAUUSD",
+      "comment": "TV_COPY|M:67184567|T:657820700",
+      "logged_at": 1776769576310,
+      "timestamp": 1776769576,
+      "account_id": "67184578",
+      "command_id": "cmd_1776769576305_drpck",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "657820700"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776769573967,
+      "timestamp": 1776769573,
+      "account_id": "67184567",
+      "command_id": "cmd_1776769573963_60luj"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "XAUUSD",
+      "comment": "TV_COPY|M:67184567|T:657803843",
+      "logged_at": 1776766599312,
+      "timestamp": 1776766599,
+      "account_id": "67184578",
+      "command_id": "cmd_1776766599307_owo9x",
+      "order_type": "MARKET_SELL",
+      "magic_offset": 1000,
+      "master_ticket": "657803843"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "XAUUSD",
+      "comment": "TV_COPY|M:67184567|T:657803653",
+      "logged_at": 1776766557024,
+      "timestamp": 1776766557,
+      "account_id": "67184578",
+      "command_id": "cmd_1776766557022_1vw1y",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "657803653"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "XAUUSD",
+      "comment": "TV_COPY|M:67184567|T:657803563",
+      "logged_at": 1776766534231,
+      "timestamp": 1776766534,
+      "account_id": "67184578",
+      "command_id": "cmd_1776766534229_lz0fw",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "657803563"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776762815020,
+      "timestamp": 1776762815,
+      "account_id": "67184567",
+      "command_id": "cmd_1776762815018_43t98"
+    },
+    {
+      "action": "PAUSE_TRADING",
+      "logged_at": 1776762805719,
+      "timestamp": 1776762805,
+      "account_id": "67184567",
+      "command_id": "cmd_1776762805715_tpn0s"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.1,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "logged_at": 1776762773459,
+      "timestamp": 1776762773,
+      "account_id": "67184578",
+      "command_id": "cmd_1776762773458_5ke8c",
+      "order_type": "BUY"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "XAUUSD",
+      "comment": "TV_COPY|M:67184567|T:657779266",
+      "logged_at": 1776762760418,
+      "timestamp": 1776762760,
+      "account_id": "67184578",
+      "command_id": "cmd_1776762760416_n9r3g",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "657779266"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "XAUUSD",
+      "comment": "TV_COPY|M:67184567|T:657779122",
+      "logged_at": 1776762760415,
+      "timestamp": 1776762760,
+      "account_id": "67184578",
+      "command_id": "cmd_1776762760413_l89i8",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "657779122"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776762754090,
+      "timestamp": 1776762754,
+      "account_id": "67184578",
+      "command_id": "cmd_1776762754080_920wb"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.1,
+      "action": "OPEN_TRADE",
+      "symbol": "XAUUSD",
+      "logged_at": 1776762728924,
+      "timestamp": 1776762728,
+      "account_id": "67184578",
+      "command_id": "cmd_1776762728922_q324m",
+      "order_type": "BUY"
+    },
+    {
+      "lots": 0.005,
+      "action": "PARTIAL_CLOSE",
+      "ticket": "657403504",
+      "logged_at": 1776760931870,
+      "timestamp": 1776760931,
+      "account_id": "67184578",
+      "command_id": "cmd_1776760931869_69nad"
+    },
+    {
+      "sl": 20,
+      "action": "TRAIL_STOP",
+      "ticket": "657403478",
+      "logged_at": 1776760895546,
+      "timestamp": 1776760895,
+      "account_id": "67184578",
+      "command_id": "cmd_1776760895544_98r5h"
+    },
+    {
+      "action": "SET_BREAKEVEN",
+      "ticket": "657403478",
+      "logged_at": 1776760876166,
+      "timestamp": 1776760876,
+      "account_id": "67184578",
+      "command_id": "cmd_1776760876162_t7aw1"
+    },
+    {
+      "action": "CLOSE_TRADE",
+      "ticket": "657403480",
+      "logged_at": 1776703868209,
+      "timestamp": 1776703868,
+      "account_id": "67184578",
+      "command_id": "cmd_1776703868206_13lq0"
+    },
+    {
+      "action": "CLOSE_TRADE",
+      "ticket": "657403472",
+      "logged_at": 1776703861539,
+      "timestamp": 1776703861,
+      "account_id": "67184578",
+      "command_id": "cmd_1776703861531_shctw"
+    },
+    {
+      "action": "CLOSE_TRADE",
+      "ticket": "657403469",
+      "logged_at": 1776703856418,
+      "timestamp": 1776703856,
+      "account_id": "67184578",
+      "command_id": "cmd_1776703856408_c2jta"
+    },
+    {
+      "action": "CLOSE_ALL",
+      "logged_at": 1776703824816,
+      "timestamp": 1776703824,
+      "account_id": "67184578",
+      "command_id": "cmd_1776703824811_1o1lv"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "XAUUSD",
+      "comment": "TV_COPY|M:67184567|T:657190047",
+      "logged_at": 1776686406125,
+      "timestamp": 1776686406,
+      "account_id": "67184578",
+      "command_id": "cmd_1776686406117_ie2mc",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "657190047"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "BTCUSD",
+      "comment": "TV_COPY|M:67184567|T:657181923",
+      "logged_at": 1776685916106,
+      "timestamp": 1776685916,
+      "account_id": "67184578",
+      "command_id": "cmd_1776685916102_v8vsc",
+      "order_type": "MARKET_SELL",
+      "magic_offset": 1000,
+      "master_ticket": "657181923"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776685819937,
+      "timestamp": 1776685819,
+      "account_id": "67184578",
+      "command_id": "cmd_1776685819914_pbwhu"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "comment": "TV_COPY|M:67184578|T:657179730",
+      "logged_at": 1776685760123,
+      "timestamp": 1776685760,
+      "account_id": "67184567",
+      "command_id": "cmd_1776685760121_7p1dl",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "657179730"
+    },
+    {
+      "action": "CLOSE_ALL",
+      "logged_at": 1776685731497,
+      "timestamp": 1776685731,
+      "account_id": "67184567",
+      "command_id": "cmd_1776685731492_0t1kv"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "comment": "TV_COPY|M:67184578|T:657106811",
+      "logged_at": 1776685489507,
+      "timestamp": 1776685489,
+      "account_id": "67184567",
+      "command_id": "cmd_1776685489506_4hhub",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "657106811"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "comment": "TV_COPY|M:67184578|T:657106811",
+      "logged_at": 1776677668850,
+      "timestamp": 1776677668,
+      "account_id": "67184567",
+      "command_id": "cmd_1776677668848_0wuqy",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "657106811"
+    },
+    {
+      "action": "PAUSE_TRADING",
+      "logged_at": 1776535152939,
+      "timestamp": 1776535152,
+      "account_id": "67184567",
+      "command_id": "cmd_1776535152938_vv6t0"
+    },
+    {
+      "action": "PAUSE_TRADING",
+      "logged_at": 1776535151428,
+      "timestamp": 1776535151,
+      "account_id": "67184567",
+      "command_id": "cmd_1776535151426_sy4cs"
+    },
+    {
+      "action": "PAUSE_TRADING",
+      "logged_at": 1776529140885,
+      "timestamp": 1776529140,
+      "account_id": "67184567",
+      "command_id": "cmd_1776529140881_jgo7s"
+    },
+    {
+      "action": "PAUSE_TRADING",
+      "logged_at": 1776529137867,
+      "timestamp": 1776529137,
+      "account_id": "67184567",
+      "command_id": "cmd_1776529137861_82j15"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "comment": "TV_COPY|M:67184578|T:656272002",
+      "logged_at": 1776428447194,
+      "timestamp": 1776428447,
+      "account_id": "67184567",
+      "command_id": "cmd_1776428447192_di2h5",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "656272002"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "comment": "TV_COPY|M:67184578|T:656270908",
+      "logged_at": 1776428388205,
+      "timestamp": 1776428388,
+      "account_id": "67184567",
+      "command_id": "cmd_1776428388203_nzb56",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "656270908"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776428362973,
+      "timestamp": 1776428362,
+      "account_id": "67184567",
+      "command_id": "cmd_1776428362970_j6f7a"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "comment": "TV_COPY|M:67184578|T:656270552",
+      "logged_at": 1776428332542,
+      "timestamp": 1776428332,
+      "account_id": "67184567",
+      "command_id": "cmd_1776428332541_3vt3m",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "656270552"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "comment": "TV_COPY|M:67184578|T:656270406",
+      "logged_at": 1776428311466,
+      "timestamp": 1776428311,
+      "account_id": "67184567",
+      "command_id": "cmd_1776428311464_sgfdg",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "656270406"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "comment": "TV_COPY|M:67184578|T:656270317",
+      "logged_at": 1776428287127,
+      "timestamp": 1776428287,
+      "account_id": "67184567",
+      "command_id": "cmd_1776428287114_i0mff",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "656270317"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776428274635,
+      "timestamp": 1776428274,
+      "account_id": "67184578",
+      "command_id": "cmd_1776428274634_f3opv"
+    },
+    {
+      "action": "PAUSE_TRADING",
+      "logged_at": 1776428268139,
+      "timestamp": 1776428268,
+      "account_id": "67184578",
+      "command_id": "cmd_1776428268137_af92a"
+    },
+    {
+      "action": "CLOSE_ALL",
+      "logged_at": 1776428260296,
+      "timestamp": 1776428260,
+      "account_id": "67184578",
+      "command_id": "cmd_1776428260291_x9g36"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "comment": "TV_COPY|M:67184578|T:656270158",
+      "logged_at": 1776428243389,
+      "timestamp": 1776428243,
+      "account_id": "67184567",
+      "command_id": "cmd_1776428243387_asfxr",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "656270158"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.1,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "logged_at": 1776428242296,
+      "timestamp": 1776428242,
+      "account_id": "67184578",
+      "command_id": "cmd_1776428242294_vt649",
+      "order_type": "BUY"
+    },
+    {
+      "action": "RESUME_TRADING",
+      "logged_at": 1776428234568,
+      "timestamp": 1776428234,
+      "account_id": "67184578",
+      "command_id": "cmd_1776428234566_gix9i"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "logged_at": 1776428209214,
+      "timestamp": 1776428209,
+      "account_id": "67184578",
+      "command_id": "cmd_1776428209211_6tt29",
+      "order_type": "BUY"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "logged_at": 1776428038075,
+      "timestamp": 1776428038,
+      "account_id": "67184578",
+      "command_id": "cmd_1776428038074_7zgzd",
+      "order_type": "BUY"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.1,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "logged_at": 1776428012278,
+      "timestamp": 1776428012,
+      "account_id": "67184578",
+      "command_id": "cmd_1776428012276_sjs5a",
+      "order_type": "BUY"
+    },
+    {
+      "action": "CLOSE_TRADE",
+      "ticket": "656266544",
+      "logged_at": 1776428002260,
+      "timestamp": 1776428002,
+      "account_id": "67184578",
+      "command_id": "cmd_1776428002258_6esc6"
+    },
+    {
+      "action": "SET_BREAKEVEN",
+      "ticket": "656266544",
+      "logged_at": 1776427997960,
+      "timestamp": 1776427997,
+      "account_id": "67184578",
+      "command_id": "cmd_1776427997956_bpxsr"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "comment": "TV_COPY|M:67184578|T:656266544",
+      "logged_at": 1776427750044,
+      "timestamp": 1776427750,
+      "account_id": "67184567",
+      "command_id": "cmd_1776427750042_algzs",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "656266544"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "comment": "TV_COPY|M:67184578|T:656263532",
+      "logged_at": 1776427716665,
+      "timestamp": 1776427716,
+      "account_id": "67184567",
+      "command_id": "cmd_1776427716664_20ta0",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "656263532"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "lots": 0.01,
+      "action": "OPEN_TRADE",
+      "symbol": "EURUSD",
+      "comment": "TV_COPY|M:67184578|T:656263494",
+      "logged_at": 1776427716656,
+      "timestamp": 1776427716,
+      "account_id": "67184567",
+      "command_id": "cmd_1776427716652_luth6",
+      "order_type": "MARKET_BUY",
+      "magic_offset": 1000,
+      "master_ticket": "656263494"
+    },
+    {
+      "action": "CLOSE_TRADE",
+      "ticket": "656041536",
+      "logged_at": 1776427371167,
+      "timestamp": 1776427371,
+      "account_id": "67184578",
+      "command_id": "cmd_1776427371164_gm9ow"
+    },
+    {
+      "sl": 0,
+      "tp": 0,
+      "action": "MODIFY_TRADE",
+      "ticket": "656041536",
+      "logged_at": 1776427329102,
+      "timestamp": 1776427329,
+      "account_id": "67184578",
+      "command_id": "cmd_1776427329093_pn8hs"
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "insights": [
+    {
+      "id": "session_best_1778489930224",
+      "type": "session_best",
+      "context": {
+        "session": "London/NY Overlap"
+      },
+      "message": "Best session: London/NY Overlap — $43.27 net (37.5% WR)",
+      "severity": "success",
+      "generated_at": 1778489930224
+    },
+    {
+      "id": "sym_best_1778489930224",
+      "type": "symbol_best",
+      "context": {
+        "symbol": "XAUUSD"
+      },
+      "message": "Top symbol: XAUUSD — $45.22 net (37.25% WR)",
+      "severity": "success",
+      "generated_at": 1778489930224
+    },
+    {
+      "id": "wr_low_1778489930224",
+      "type": "win_rate_low",
+      "message": "Win rate is low at 36.54%. Review your entries.",
+      "severity": "danger",
+      "generated_at": 1778489930224
+    },
+    {
+      "id": "bestday_1778489930224",
+      "type": "best_day",
+      "message": "Best day: Thursday with $45.1 avg profit",
+      "severity": "info",
+      "generated_at": 1778489930224
+    }
+  ],
+  "account_id": "57438456",
+  "generated_at": 1778489930305
+}
