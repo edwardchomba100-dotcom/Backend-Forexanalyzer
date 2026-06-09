@@ -3388,7 +3388,7 @@ const startServer = async () => {
   loadAccountRegistry();
   await hydrateAccountSnapshots();
 
-  server.listen(CONFIG.PORT, () => {
+  server.listen(CONFIG.PORT, '0.0.0.0', () => {
   console.log('');
   console.log('╔══════════════════════════════════════════════════════╗');
   console.log('║    ForexAnalyzer Pro — Backend Server v5.1.0         ║');
