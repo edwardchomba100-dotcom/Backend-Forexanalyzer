@@ -49,6 +49,39 @@ create table if not exists public.tradevault_user_profiles (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.tradevault_user_trials (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  email text,
+  plan_mode text not null default 'free',
+  trial_started_at timestamptz not null default now(),
+  trial_ends_at timestamptz not null default (now() + interval '30 days'),
+  grace_ends_at timestamptz not null default (now() + interval '33 days'),
+  paid_until timestamptz,
+  device_id_hash text,
+  device_first_seen_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.tradevault_user_trials
+  add column if not exists email text,
+  add column if not exists plan_mode text not null default 'free',
+  add column if not exists trial_started_at timestamptz not null default now(),
+  add column if not exists trial_ends_at timestamptz not null default (now() + interval '30 days'),
+  add column if not exists grace_ends_at timestamptz not null default (now() + interval '33 days'),
+  add column if not exists paid_until timestamptz,
+  add column if not exists device_id_hash text,
+  add column if not exists device_first_seen_at timestamptz,
+  add column if not exists created_at timestamptz not null default now(),
+  add column if not exists updated_at timestamptz not null default now();
+
+create index if not exists tradevault_user_trials_device_id_hash_idx
+  on public.tradevault_user_trials (device_id_hash)
+  where device_id_hash is not null;
+
+create index if not exists tradevault_user_trials_plan_idx
+  on public.tradevault_user_trials (plan_mode, grace_ends_at);
+
 create table if not exists public.tradevault_account_owners (
   account_id text primary key,
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -117,6 +150,7 @@ alter table public.tradevault_account_settings enable row level security;
 alter table public.tradevault_account_alerts enable row level security;
 alter table public.tradevault_account_snapshots enable row level security;
 alter table public.tradevault_user_profiles enable row level security;
+alter table public.tradevault_user_trials enable row level security;
 alter table public.tradevault_account_owners enable row level security;
 alter table public.tradevault_user_ea_keys enable row level security;
 alter table public.tradevault_direct_mt_accounts enable row level security;
@@ -132,6 +166,17 @@ select
   p.email,
   p.full_name,
   p.nickname,
+  coalesce(t.plan_mode, 'free') as plan_mode,
+  t.trial_started_at,
+  t.trial_ends_at,
+  t.grace_ends_at,
+  t.paid_until,
+  case
+    when t.paid_until is not null and t.paid_until > now() then 'paid'
+    when t.grace_ends_at is not null and t.grace_ends_at <= now() then 'expired'
+    when t.trial_ends_at is not null and t.trial_ends_at <= now() then 'grace'
+    else 'trial'
+  end as license_status,
   o.account_id,
   coalesce(s.config ->> 'connectionMethod', s.config ->> 'source', 'ea') as connection_method,
   s.config ->> 'broker' as broker,
@@ -163,6 +208,8 @@ select
   end as last_seen_at,
   s.updated_at as snapshot_updated_at
 from public.tradevault_user_profiles p
+left join public.tradevault_user_trials t
+  on t.user_id = p.user_id
 left join public.tradevault_account_owners o
   on o.user_id = p.user_id
 left join public.tradevault_account_snapshots s

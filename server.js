@@ -331,6 +331,13 @@ const CONFIG = {
   DB_WRITE_DEBOUNCE_MS:      +(process.env.DB_WRITE_DEBOUNCE_MS || 750),
   ALLOW_LEGACY_EA_KEY:       process.env.ALLOW_LEGACY_EA_KEY !== 'false',
 
+  PRODUCT_LICENSE_MODE:      process.env.PRODUCT_LICENSE_MODE || 'free',
+  FREE_TRIAL_DAYS:           +(process.env.FREE_TRIAL_DAYS || 30),
+  FREE_TRIAL_GRACE_DAYS:     +(process.env.FREE_TRIAL_GRACE_DAYS || 3),
+  FREE_TRIAL_WARNING_DAYS:   +(process.env.FREE_TRIAL_WARNING_DAYS || 5),
+  FREE_EA_URL:               process.env.FREE_EA_URL || 'https://www.mql5.com/en/market/product/111375',
+  PAID_EA_URL:               process.env.PAID_EA_URL || 'https://www.mql5.com/en/market/product/136580?source=Site+Market+My+Products+Page',
+
   METAAPI_TOKEN:             process.env.METAAPI_TOKEN || '',
   METAAPI_PROVISIONING_URL:  (process.env.METAAPI_PROVISIONING_URL || 'https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai').replace(/\/+$/, ''),
   METAAPI_CLIENT_API_URL:    (process.env.METAAPI_CLIENT_API_URL || 'https://mt-client-api-v1.new-york.agiliumtrade.ai').replace(/\/+$/, ''),
@@ -356,6 +363,7 @@ const g_accountOwners           = new Map();
 const g_eaKeyOwners             = new Map();
 const g_authTokenCache          = new Map();
 const g_profileUpsertAt         = new Map();
+const g_userLicenseCache        = new Map();
 const g_historySignatures       = new Map();
 const g_directAccounts          = new Map();
 const g_directSyncTimers        = new Map();
@@ -517,6 +525,212 @@ const requireUser = async (req, res, next) => {
   req.user = sanitizeUser(user);
   upsertUserProfile(user);
   return next();
+};
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const TRIAL_LICENSE_TABLE = 'tradevault_user_trials';
+const TRIAL_LICENSE_COLUMNS = [
+  'user_id',
+  'email',
+  'plan_mode',
+  'trial_started_at',
+  'trial_ends_at',
+  'grace_ends_at',
+  'paid_until',
+  'device_id_hash',
+  'device_first_seen_at',
+  'created_at',
+  'updated_at',
+].join(',');
+
+const addDaysIso = (dateLike, days) => {
+  const start = Number.isFinite(dateLike) ? dateLike : new Date(dateLike).getTime();
+  return new Date(start + days * DAY_MS).toISOString();
+};
+
+const toMs = (value) => {
+  const ms = value ? new Date(value).getTime() : NaN;
+  return Number.isFinite(ms) ? ms : null;
+};
+
+const getTrialDeviceId = (req) => {
+  const raw = req.headers['x-fap-device-id'] || req.headers['x-trial-device-id'] || '';
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return String(value || '').trim().slice(0, 160);
+};
+
+const getTrialDeviceHash = (req) => {
+  const deviceId = getTrialDeviceId(req);
+  return deviceId ? hashSecret(`forexanalyzer-pro-device:${deviceId}`) : null;
+};
+
+const createDefaultTrialRow = (user, startMs = Date.now(), deviceHash = null) => ({
+  user_id: user.id,
+  email: user.email || null,
+  plan_mode: CONFIG.PRODUCT_LICENSE_MODE || 'free',
+  trial_started_at: new Date(startMs).toISOString(),
+  trial_ends_at: addDaysIso(startMs, CONFIG.FREE_TRIAL_DAYS),
+  grace_ends_at: addDaysIso(startMs, CONFIG.FREE_TRIAL_DAYS + CONFIG.FREE_TRIAL_GRACE_DAYS),
+  paid_until: null,
+  device_id_hash: deviceHash || null,
+  device_first_seen_at: deviceHash ? new Date(startMs).toISOString() : null,
+  created_at: new Date(startMs).toISOString(),
+  updated_at: new Date(startMs).toISOString(),
+});
+
+const serializeTrialLicense = (row, options = {}) => {
+  const now = Date.now();
+  const baseStartMs = toMs(row?.trial_started_at || row?.created_at) || now;
+  const trialEndsMs = toMs(row?.trial_ends_at) || baseStartMs + CONFIG.FREE_TRIAL_DAYS * DAY_MS;
+  const graceEndsMs = toMs(row?.grace_ends_at) || baseStartMs + (CONFIG.FREE_TRIAL_DAYS + CONFIG.FREE_TRIAL_GRACE_DAYS) * DAY_MS;
+  const paidUntilMs = toMs(row?.paid_until);
+  const warningStartsMs = graceEndsMs - CONFIG.FREE_TRIAL_WARNING_DAYS * DAY_MS;
+  const paid = row?.plan_mode === 'paid' || (paidUntilMs !== null && paidUntilMs > now);
+  const deviceBlocked = !!options.deviceBlocked;
+  const shouldWarn = !paid && !deviceBlocked && now >= warningStartsMs && now < graceEndsMs;
+
+  let status = 'active';
+  if (options.migrationRequired) status = 'unconfigured';
+  else if (deviceBlocked) status = 'device_blocked';
+  else if (paid) status = 'paid';
+  else if (now >= graceEndsMs) status = 'expired';
+  else if (now >= trialEndsMs) status = 'grace';
+  else if (shouldWarn) status = 'warning';
+
+  const hasFullAccess = !options.migrationRequired && !deviceBlocked && (paid || now < graceEndsMs);
+
+  return {
+    productMode: CONFIG.PRODUCT_LICENSE_MODE || 'free',
+    planMode: row?.plan_mode || CONFIG.PRODUCT_LICENSE_MODE || 'free',
+    status,
+    paid,
+    hasFullAccess,
+    dashboardOnly: !hasFullAccess,
+    deviceBlocked,
+    shouldWarn,
+    trialDays: CONFIG.FREE_TRIAL_DAYS,
+    graceDays: CONFIG.FREE_TRIAL_GRACE_DAYS,
+    warningDays: CONFIG.FREE_TRIAL_WARNING_DAYS,
+    trialStartedAt: new Date(baseStartMs).toISOString(),
+    trialEndsAt: new Date(trialEndsMs).toISOString(),
+    graceEndsAt: new Date(graceEndsMs).toISOString(),
+    paidUntil: row?.paid_until || null,
+    warningStartsAt: new Date(warningStartsMs).toISOString(),
+    daysUntilTrialEnds: Math.max(0, Math.ceil((trialEndsMs - now) / DAY_MS)),
+    daysUntilAccessEnds: Math.max(0, Math.ceil((graceEndsMs - now) / DAY_MS)),
+    freeEaUrl: CONFIG.FREE_EA_URL,
+    paidEaUrl: CONFIG.PAID_EA_URL,
+    migrationRequired: !!options.migrationRequired,
+    message: options.message || null,
+  };
+};
+
+const getMigrationBypassLicense = (user, message) =>
+  serializeTrialLicense(createDefaultTrialRow(user), {
+    migrationRequired: true,
+    message,
+  });
+
+const ensureUserLicense = async (user, deviceHash = null) => {
+  if (!supabase || !user?.id) return null;
+  const cacheKey = `${user.id}:${deviceHash || 'no-device'}`;
+  const cached = g_userLicenseCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.license;
+
+  let row = null;
+  const existing = await dbFrom(TRIAL_LICENSE_TABLE)
+    .select(TRIAL_LICENSE_COLUMNS)
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (existing.error) {
+    const missingTable = existing.error.code === '42P01' || /tradevault_user_trials/i.test(existing.error.message || '');
+    const license = getMigrationBypassLicense(
+      user,
+      missingTable
+        ? 'Trial table is not installed yet. Run the latest supabase_schema.sql migration.'
+        : existing.error.message,
+    );
+    if (!missingTable) logDbError('load user trial', existing.error);
+    return license;
+  }
+
+  if (existing.data) {
+    row = existing.data;
+  } else {
+    const fresh = createDefaultTrialRow(user, Date.now(), deviceHash);
+    const inserted = await dbFrom(TRIAL_LICENSE_TABLE)
+      .insert(fresh)
+      .select(TRIAL_LICENSE_COLUMNS)
+      .maybeSingle();
+    if (inserted.error) {
+      logDbError('create user trial', inserted.error);
+      return serializeTrialLicense(fresh, { message: inserted.error.message });
+    }
+    row = inserted.data || fresh;
+  }
+
+  const update = { updated_at: new Date().toISOString() };
+  if (user.email && row.email !== user.email) update.email = user.email;
+  if (deviceHash && !row.device_id_hash) {
+    update.device_id_hash = deviceHash;
+    update.device_first_seen_at = new Date().toISOString();
+  }
+
+  if (Object.keys(update).length > 1) {
+    const updated = await dbFrom(TRIAL_LICENSE_TABLE)
+      .update(update)
+      .eq('user_id', user.id);
+    if (updated.error) {
+      logDbError('update user trial', updated.error);
+    } else {
+      row = { ...row, ...update };
+    }
+  }
+
+  let deviceBlocked = false;
+  if (deviceHash) {
+    const matches = await dbFrom(TRIAL_LICENSE_TABLE)
+      .select('user_id,email')
+      .eq('device_id_hash', deviceHash)
+      .limit(10);
+    if (matches.error) {
+      logDbError('check trial device', matches.error);
+    } else {
+      deviceBlocked = (matches.data || []).some((match) => match.user_id && match.user_id !== user.id);
+    }
+  }
+
+  const license = serializeTrialLicense(row, { deviceBlocked });
+  g_userLicenseCache.set(cacheKey, { license, expiresAt: Date.now() + 60 * 1000 });
+  return license;
+};
+
+const attachTrialLicense = async (req, res, next) => {
+  const deviceHash = getTrialDeviceHash(req);
+  const license = await ensureUserLicense(req.user, deviceHash);
+  if (!license) return res.status(500).json({ error: 'Could not load license status' });
+  req.license = license;
+  next();
+};
+
+const isDashboardReadRequest = (req) => {
+  if (req.path === '/auth/me') return true;
+  if (req.method !== 'GET') return false;
+  if (req.path === '/accounts') return true;
+  if (/^\/accounts\/[^/]+\/(dashboard|status|positions|history|analytics)$/.test(req.path)) return true;
+  return false;
+};
+
+const enforceTrialAccess = (req, res, next) => {
+  if (!req.license || req.license.hasFullAccess || isDashboardReadRequest(req)) return next();
+  const status = req.license.deviceBlocked ? 403 : 402;
+  return res.status(status).json({
+    error: req.license.deviceBlocked
+      ? 'This browser is already linked to a different ForexAnalyzer Pro trial account.'
+      : 'Your free trial has ended. Upgrade on MQL5 to unlock this feature.',
+    license: req.license,
+  });
 };
 
 // ─── Default EA Settings ──────────────────────────────────────────────────────
@@ -1299,6 +1513,15 @@ eaRouter.use(async (req, res, next) => {
 
   const ownerId = await lookupEaKeyOwner(key);
   if (!ownerId) return res.status(401).json({ error: 'Unauthorized EA key' });
+
+  const license = await ensureUserLicense({ id: ownerId, email: '' });
+  if (!license?.hasFullAccess) {
+    return res.status(402).json({
+      error: 'Your ForexAnalyzer Pro free trial has ended. Upgrade on MQL5 to keep the EA connected.',
+      license,
+    });
+  }
+
   req.eaAuthType = 'user_key';
   req.eaUserId = ownerId;
   next();
@@ -2379,6 +2602,8 @@ app.get('/public/share/:token', async (req, res) => {
 });
 
 app.use('/api', requireUser);
+app.use('/api', attachTrialLicense);
+app.use('/api', enforceTrialAccess);
 
 app.get('/api/auth/me', async (req, res) => {
   const keyRows = supabase
@@ -2394,6 +2619,7 @@ app.get('/api/auth/me', async (req, res) => {
   res.json({
     user: req.user,
     eaKey: keyRows.data?.[0] || null,
+    license: req.license,
   });
 });
 
