@@ -91,6 +91,21 @@ create table if not exists public.tradevault_account_owners (
 create index if not exists tradevault_account_owners_user_id_idx
   on public.tradevault_account_owners (user_id);
 
+create table if not exists public.tradevault_account_deletions (
+  account_id text not null,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  source text not null default 'ea',
+  deleted_at timestamptz not null default now(),
+  primary key (account_id, user_id)
+);
+
+alter table public.tradevault_account_deletions
+  add column if not exists source text not null default 'ea',
+  add column if not exists deleted_at timestamptz not null default now();
+
+create index if not exists tradevault_account_deletions_user_id_idx
+  on public.tradevault_account_deletions (user_id, deleted_at desc);
+
 create table if not exists public.tradevault_user_ea_keys (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -152,6 +167,7 @@ alter table public.tradevault_account_snapshots enable row level security;
 alter table public.tradevault_user_profiles enable row level security;
 alter table public.tradevault_user_trials enable row level security;
 alter table public.tradevault_account_owners enable row level security;
+alter table public.tradevault_account_deletions enable row level security;
 alter table public.tradevault_user_ea_keys enable row level security;
 alter table public.tradevault_direct_mt_accounts enable row level security;
 alter table public.tradevault_share_links enable row level security;
@@ -214,3 +230,15 @@ left join public.tradevault_account_owners o
   on o.user_id = p.user_id
 left join public.tradevault_account_snapshots s
   on s.account_id = o.account_id;
+
+create or replace view public.forexanalyzer_deleted_accounts as
+select
+  d.account_id,
+  d.user_id,
+  p.email,
+  p.full_name,
+  d.source,
+  d.deleted_at
+from public.tradevault_account_deletions d
+left join public.tradevault_user_profiles p
+  on p.user_id = d.user_id;

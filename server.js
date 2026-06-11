@@ -364,6 +364,7 @@ const g_eaKeyOwners             = new Map();
 const g_authTokenCache          = new Map();
 const g_profileUpsertAt         = new Map();
 const g_userLicenseCache        = new Map();
+const g_accountDeletionMarkers  = new Map();
 const g_historySignatures       = new Map();
 const g_directAccounts          = new Map();
 const g_directSyncTimers        = new Map();
@@ -1158,9 +1159,57 @@ class AccountState {
 const getAccountOwner = (accountId) =>
   g_accountOwners.get(String(accountId)) || null;
 
+const accountDeletionKey = (userId, accountId) =>
+  `${String(userId || '')}:${String(accountId || '')}`;
+
+const isAccountDeletedForUser = (userId, accountId) =>
+  !!userId && !!accountId && g_accountDeletionMarkers.has(accountDeletionKey(userId, accountId));
+
+const isAccountDeletedByAnyUser = (accountId) => {
+  const suffix = `:${String(accountId)}`;
+  for (const key of g_accountDeletionMarkers.keys()) {
+    if (key.endsWith(suffix)) return true;
+  }
+  return false;
+};
+
+const recordAccountDeletion = async (accountId, userId, source = 'ea') => {
+  if (!accountId || !userId) return;
+  const row = {
+    account_id: String(accountId),
+    user_id: userId,
+    source: String(source || 'ea').slice(0, 32),
+    deleted_at: new Date().toISOString(),
+  };
+  g_accountDeletionMarkers.set(accountDeletionKey(userId, accountId), row);
+
+  if (!supabase) return;
+  const { error } = await dbFrom('tradevault_account_deletions').upsert(row, {
+    onConflict: 'account_id,user_id',
+  });
+  if (error) logDbError(`record account deletion:${accountId}`, error);
+};
+
+const clearAccountDeletion = async (accountId, userId) => {
+  if (!accountId || !userId) return;
+  g_accountDeletionMarkers.delete(accountDeletionKey(userId, accountId));
+
+  if (!supabase) return;
+  const { error } = await dbFrom('tradevault_account_deletions')
+    .delete()
+    .eq('account_id', String(accountId))
+    .eq('user_id', userId);
+  if (error) logDbError(`clear account deletion:${accountId}`, error);
+};
+
 const setAccountOwner = async (accountId, userId) => {
   if (!accountId || !userId) return null;
   const id = String(accountId);
+  if (isAccountDeletedForUser(userId, id)) {
+    const err = new Error(`Account ${id} was removed from this user. Reconnect it from the Connect Account page to add it again.`);
+    err.statusCode = 410;
+    throw err;
+  }
   const existing = getAccountOwner(id);
   if (existing && existing !== userId) {
     const err = new Error(`Account ${id} is already linked to another user`);
@@ -1183,15 +1232,15 @@ const setAccountOwner = async (accountId, userId) => {
   return userId;
 };
 
-const clearAccountOwner = (accountId) => {
+const clearAccountOwner = async (accountId) => {
   const id = String(accountId);
   g_accountOwners.delete(id);
-  runDbTask(`delete account owner:${id}`, async () => {
+  if (supabase) {
     const { error } = await dbFrom('tradevault_account_owners')
       .delete()
       .eq('account_id', id);
     if (error) throw error;
-  });
+  }
 };
 
 const ensureAccountOwner = async (req, res, accountId) => {
@@ -1232,6 +1281,16 @@ const serializeShareLink = (row) => ({
   expiresAt: row.expires_at,
   revokedAt: row.revoked_at,
 });
+
+const revokeShareLinksForAccount = async (accountId, userId) => {
+  if (!supabase || !accountId || !userId) return;
+  const { error } = await dbFrom('tradevault_share_links')
+    .update({ revoked_at: new Date().toISOString() })
+    .eq('account_id', String(accountId))
+    .eq('user_id', userId)
+    .is('revoked_at', null);
+  if (error) throw error;
+};
 
 const buildSharePayload = (accountId, fallbackSnapshot = null, label = '') => {
   const state = g_accounts.get(String(accountId));
@@ -1317,7 +1376,10 @@ const registerAccount = (accountId, config = {}) => {
 
 const loadAccountRegistry = () => {
   const store = loadJSON(CONFIG.ACCOUNTS_FILE);
-  (store.accounts || []).forEach(acc => registerAccount(acc.accountId, acc.config));
+  (store.accounts || []).forEach(acc => {
+    if (isAccountDeletedByAnyUser(acc.accountId)) return;
+    registerAccount(acc.accountId, acc.config);
+  });
 };
 
 const persistAccountRegistry = () => {
@@ -1456,17 +1518,15 @@ const scheduleAccountSnapshotPersist = (state, delayMs = CONFIG.DB_WRITE_DEBOUNC
   g_snapshotPersistTimers.set(state.accountId, timer);
 };
 
-const deleteAccountSnapshot = (accountId) => {
+const deleteAccountSnapshot = async (accountId) => {
   if (!supabase) return;
   const existing = g_snapshotPersistTimers.get(accountId);
   if (existing) clearTimeout(existing);
   g_snapshotPersistTimers.delete(accountId);
-  runDbTask(`delete account snapshot:${accountId}`, async () => {
-    const { error } = await dbFrom('tradevault_account_snapshots')
-      .delete()
-      .eq('account_id', accountId);
-    if (error) throw error;
-  });
+  const { error } = await dbFrom('tradevault_account_snapshots')
+    .delete()
+    .eq('account_id', accountId);
+  if (error) throw error;
 };
 
 const eaRouter = express.Router();
@@ -1493,7 +1553,21 @@ const lookupEaKeyOwner = async (apiKey) => {
 };
 
 const ensureEaCanUseAccount = async (req, res, accountId) => {
+  if (!req.eaUserId && isAccountDeletedByAnyUser(accountId)) {
+    res.status(410).json({
+      error: `Account ${accountId} was removed from this dashboard. Reconnect it from the Connect Account page to add it again.`,
+      reconnectRequired: true,
+    });
+    return false;
+  }
   if (!req.eaUserId) return true;
+  if (isAccountDeletedForUser(req.eaUserId, accountId)) {
+    res.status(410).json({
+      error: `Account ${accountId} was removed from this dashboard. Reconnect it from the Connect Account page to add it again.`,
+      reconnectRequired: true,
+    });
+    return false;
+  }
   try {
     await setAccountOwner(accountId, req.eaUserId);
     return true;
@@ -1544,11 +1618,12 @@ eaRouter.use(async (req, res, next) => {
 eaRouter.get('/settings/:accountId', async (req, res) => {
   const { accountId } = req.params;
 
+  if (!(await ensureEaCanUseAccount(req, res, accountId))) return;
+
   // Auto-register fresh accounts so the settings fetch always succeeds
   if (!g_accounts.has(accountId)) {
     registerAccount(accountId, { role: 'STANDALONE' });
   }
-  if (!(await ensureEaCanUseAccount(req, res, accountId))) return;
 
   const state    = g_accounts.get(accountId);
   const settings = loadAccountSettings(accountId);
@@ -1592,8 +1667,8 @@ eaRouter.post('/live', async (req, res) => {
   const { accountId } = req.query;
   if (!accountId) return res.status(400).json({ error: 'accountId required' });
 
-  if (!g_accounts.has(accountId)) registerAccount(accountId, { role: 'STANDALONE' });
   if (!(await ensureEaCanUseAccount(req, res, accountId))) return;
+  if (!g_accounts.has(accountId)) registerAccount(accountId, { role: 'STANDALONE' });
 
   const state = g_accounts.get(accountId);
   markEaOnline(state);
@@ -1631,8 +1706,8 @@ eaRouter.post('/static', async (req, res) => {
   const { accountId } = req.query;
   if (!accountId) return res.status(400).json({ error: 'accountId required' });
 
-  if (!g_accounts.has(accountId)) registerAccount(accountId, { role: 'STANDALONE' });
   if (!(await ensureEaCanUseAccount(req, res, accountId))) return;
+  if (!g_accounts.has(accountId)) registerAccount(accountId, { role: 'STANDALONE' });
 
   const state = g_accounts.get(accountId);
   markEaOnline(state);
@@ -1662,8 +1737,8 @@ eaRouter.post('/status', async (req, res) => {
   const { accountId } = req.query;
   if (!accountId) return res.status(400).json({ error: 'accountId required' });
 
-  if (!g_accounts.has(accountId)) registerAccount(accountId, { role: 'STANDALONE' });
   if (!(await ensureEaCanUseAccount(req, res, accountId))) return;
+  if (!g_accounts.has(accountId)) registerAccount(accountId, { role: 'STANDALONE' });
 
   const state = g_accounts.get(accountId);
   markEaOnline(state);
@@ -2812,6 +2887,7 @@ app.post('/api/direct-accounts/connect', async (req, res) => {
       metaapiAccountId: row.metaapi_account_id,
       role: ['MASTER', 'SLAVE', 'STANDALONE'].includes(role) ? role : 'STANDALONE',
     });
+    await clearAccountDeletion(accountId, req.user.id);
     await setAccountOwner(accountId, req.user.id);
     scheduleAccountSnapshotPersist(g_accounts.get(accountId), 0);
 
@@ -2868,6 +2944,7 @@ app.post('/api/accounts/register', async (req, res) => {
   if (owner && owner !== req.user.id) {
     return res.status(409).json({ error: `Account ${accountId} is already linked to another user` });
   }
+  await clearAccountDeletion(accountId, req.user.id);
   registerAccount(accountId, config || {});
   try {
     await setAccountOwner(accountId, req.user.id);
@@ -2906,25 +2983,33 @@ app.delete('/api/accounts/:accountId', async (req, res) => {
   if (!userOwnsAccount(req.user.id, accountId)) {
     return res.status(403).json({ error: `Account ${accountId} is not linked to your user` });
   }
-  const state = g_accounts.get(accountId);
-  if (state.config?.source === 'metaapi') {
-    const row = g_directAccounts.get(accountId);
-    stopDirectAccountSync(accountId);
-    if (row) {
-      await removeMetaApiAccount(row.metaapi_account_id);
-      persistDirectAccountRow(row, {
-        revoked_at: new Date().toISOString(),
-        connection_status: 'disconnected',
-      });
-      g_directAccounts.delete(accountId);
+  try {
+    const state = g_accounts.get(accountId);
+    await recordAccountDeletion(accountId, req.user.id, state.config?.source || 'ea');
+
+    if (state.config?.source === 'metaapi') {
+      const row = g_directAccounts.get(accountId);
+      stopDirectAccountSync(accountId);
+      if (row) {
+        await removeMetaApiAccount(row.metaapi_account_id);
+        persistDirectAccountRow(row, {
+          revoked_at: new Date().toISOString(),
+          connection_status: 'disconnected',
+        });
+        g_directAccounts.delete(accountId);
+      }
     }
+    if (state._offlineTimer) clearInterval(state._offlineTimer);
+    g_accounts.delete(accountId);
+    persistAccountRegistry();
+    await clearAccountOwner(accountId);
+    await deleteAccountSnapshot(accountId);
+    await revokeShareLinksForAccount(accountId, req.user.id);
+    res.json({ success: true });
+  } catch (err) {
+    console.error(`[Account] Delete failed for ${accountId}: ${err.message}`);
+    res.status(500).json({ error: err.message || 'Could not delete account' });
   }
-  if (state._offlineTimer) clearInterval(state._offlineTimer);
-  g_accounts.delete(accountId);
-  persistAccountRegistry();
-  clearAccountOwner(accountId);
-  deleteAccountSnapshot(accountId);
-  res.json({ success: true });
 });
 
 // ─── REST: Settings (NEW in v5.0.0) ──────────────────────────────────────────
@@ -3514,10 +3599,28 @@ const hydrateDatabase = async () => {
   }
 
   try {
+    const { data, error } = await dbFrom('tradevault_account_deletions')
+      .select('account_id,user_id,source,deleted_at');
+    if (error) throw error;
+    for (const row of data || []) {
+      g_accountDeletionMarkers.set(accountDeletionKey(row.user_id, row.account_id), row);
+    }
+    console.log(`[Supabase] Loaded ${data?.length || 0} account deletion marker row(s).`);
+  } catch (e) {
+    const missingTable = e?.code === '42P01' || /tradevault_account_deletions/i.test(e?.message || '');
+    if (missingTable) {
+      console.warn('[Supabase] Account deletion marker table not installed yet. Run the latest supabase_schema.sql migration.');
+    } else {
+      logDbError('hydrate account deletion markers', e);
+    }
+  }
+
+  try {
     const { data, error } = await dbFrom('tradevault_account_owners')
       .select('account_id,user_id,claimed_at');
     if (error) throw error;
     for (const row of data || []) {
+      if (isAccountDeletedForUser(row.user_id, row.account_id)) continue;
       g_accountOwners.set(row.account_id, row.user_id);
     }
     console.log(`[Supabase] Loaded ${data?.length || 0} account owner row(s).`);
@@ -3549,6 +3652,7 @@ const hydrateDirectAccounts = async () => {
     if (error) throw error;
 
     for (const row of data || []) {
+      if (isAccountDeletedForUser(row.user_id, row.account_id)) continue;
       g_directAccounts.set(row.account_id, row);
       registerAccount(row.account_id, {
         alias: row.account_name || row.login,
@@ -3583,6 +3687,9 @@ const hydrateAccountSnapshots = async () => {
     if (error) throw error;
 
     for (const row of data || []) {
+      if ((row.owner_user_id && isAccountDeletedForUser(row.owner_user_id, row.account_id)) || isAccountDeletedByAnyUser(row.account_id)) {
+        continue;
+      }
       if (!g_accounts.has(row.account_id)) {
         registerAccount(row.account_id, row.config || {});
       }
