@@ -336,7 +336,8 @@ const CONFIG = {
   FREE_TRIAL_GRACE_DAYS:     +(process.env.FREE_TRIAL_GRACE_DAYS || 3),
   FREE_TRIAL_WARNING_DAYS:   +(process.env.FREE_TRIAL_WARNING_DAYS || 5),
   FREE_EA_URL:               process.env.FREE_EA_URL || 'https://www.mql5.com/en/market/product/111375',
-  PAID_EA_URL:               process.env.PAID_EA_URL || 'https://www.mql5.com/en/market/product/136580?source=Site+Market+My+Products+Page',
+  PAID_EA_URL:               process.env.PAID_EA_URL || 'https://www.mql5.com/en/market/product/182969',
+  PAID_EA_BUILD_TOKEN:       process.env.PAID_EA_BUILD_TOKEN || '',
 
   METAAPI_TOKEN:             process.env.METAAPI_TOKEN || '',
   METAAPI_PROVISIONING_URL:  (process.env.METAAPI_PROVISIONING_URL || 'https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai').replace(/\/+$/, ''),
@@ -403,6 +404,12 @@ const safeWriteJSONFile = (filePath, payload) => {
 
 const hashSecret = (secret) =>
   crypto.createHash('sha256').update(String(secret || '')).digest('hex');
+
+const safeSecretEquals = (a, b) => {
+  const aHash = Buffer.from(hashSecret(a), 'hex');
+  const bHash = Buffer.from(hashSecret(b), 'hex');
+  return aHash.length === bHash.length && crypto.timingSafeEqual(aHash, bHash);
+};
 
 const publicHash = (value, length = 10) =>
   hashSecret(value).slice(0, length);
@@ -632,6 +639,89 @@ const getMigrationBypassLicense = (user, message) =>
     message,
   });
 
+const clearUserLicenseCache = (userId) => {
+  for (const key of g_userLicenseCache.keys()) {
+    if (String(key).startsWith(`${userId}:`)) g_userLicenseCache.delete(key);
+  }
+};
+
+const firstValue = (...values) => {
+  for (const value of values) {
+    const v = Array.isArray(value) ? value[0] : value;
+    if (v !== undefined && v !== null && String(v).trim() !== '') return String(v).trim();
+  }
+  return '';
+};
+
+const readEaProductProof = (req) => {
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const meta = body.meta && typeof body.meta === 'object' ? body.meta : {};
+  return {
+    edition: firstValue(
+      req.headers['x-ea-edition'],
+      req.query.eaEdition,
+      req.query.ea_edition,
+      meta.ea_edition,
+      meta.edition,
+      body.ea_edition,
+      body.edition,
+    ).toUpperCase(),
+    productType: firstValue(
+      req.headers['x-ea-product-type'],
+      req.query.productType,
+      req.query.product_type,
+      meta.product_type,
+      body.product_type,
+    ).toUpperCase(),
+    marketProductId: firstValue(
+      req.headers['x-ea-market-product-id'],
+      req.query.marketProductId,
+      req.query.market_product_id,
+      meta.market_product_id,
+      body.market_product_id,
+    ),
+    buildToken: firstValue(
+      req.headers['x-ea-build-token'],
+      req.query.buildToken,
+      req.query.build_token,
+      meta.build_token,
+      body.build_token,
+    ),
+  };
+};
+
+const wantsPaidEaAccess = (proof) =>
+  proof.edition === 'PAID' || proof.productType === 'PREMIUM' || proof.marketProductId === '182969';
+
+const isValidPaidEaProof = (proof) =>
+  !!CONFIG.PAID_EA_BUILD_TOKEN
+  && wantsPaidEaAccess(proof)
+  && !!proof.buildToken
+  && safeSecretEquals(proof.buildToken, CONFIG.PAID_EA_BUILD_TOKEN);
+
+const markUserPaidFromEa = async (userId, proof = {}) => {
+  if (!supabase || !userId) return false;
+  const nowIso = new Date().toISOString();
+  const row = {
+    user_id: userId,
+    plan_mode: 'paid',
+    paid_until: null,
+    updated_at: nowIso,
+  };
+
+  const { error } = await dbFrom(TRIAL_LICENSE_TABLE)
+    .upsert(row, { onConflict: 'user_id' });
+
+  if (error) {
+    logDbError('mark paid EA license', error);
+    return false;
+  }
+
+  clearUserLicenseCache(userId);
+  console.log(`[License] Paid EA verified for user ${userId}${proof.marketProductId ? ` (MQL5 product ${proof.marketProductId})` : ''}`);
+  return true;
+};
+
 const ensureUserLicense = async (user, deviceHash = null) => {
   if (!supabase || !user?.id) return null;
   const cacheKey = `${user.id}:${deviceHash || 'no-device'}`;
@@ -717,6 +807,7 @@ const attachTrialLicense = async (req, res, next) => {
 
 const isDashboardReadRequest = (req) => {
   if (req.path === '/auth/me') return true;
+  if (req.path.startsWith('/support')) return true;
   if (req.method !== 'GET') return false;
   if (req.path === '/accounts') return true;
   if (/^\/accounts\/[^/]+\/(dashboard|status|positions|history|analytics)$/.test(req.path)) return true;
@@ -1282,6 +1373,168 @@ const serializeShareLink = (row) => ({
   revokedAt: row.revoked_at,
 });
 
+const SUPPORT_TICKET_TABLE = 'tradevault_support_tickets';
+const SUPPORT_MESSAGE_TABLE = 'tradevault_support_messages';
+const SUPPORT_AGENT_TABLE = 'tradevault_support_agents';
+
+const SUPPORT_CATEGORIES = new Set([
+  'account_connection',
+  'ea_api_key',
+  'billing',
+  'trade_data',
+  'copy_trading',
+  'alerts',
+  'general',
+]);
+const SUPPORT_PRIORITIES = new Set(['low', 'normal', 'urgent']);
+const SUPPORT_STATUSES = new Set(['open', 'pending', 'resolved', 'closed']);
+
+const cleanSupportText = (value, maxLength) =>
+  String(value || '')
+    .replace(/\u0000/g, '')
+    .trim()
+    .slice(0, maxLength);
+
+const normalizeSupportOption = (value, allowed, fallback) => {
+  const normalized = String(value || fallback).toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  return allowed.has(normalized) ? normalized : fallback;
+};
+
+const serializeSupportTicket = (row, profile = null) => ({
+  id: row.id,
+  userId: row.user_id,
+  accountId: row.account_id || '',
+  subject: row.subject || '',
+  category: row.category || 'general',
+  priority: row.priority || 'normal',
+  status: row.status || 'open',
+  assignedTo: row.assigned_to || '',
+  lastMessageAt: row.last_message_at,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+  customer: profile ? {
+    userId: profile.user_id,
+    email: profile.email || '',
+    name: profile.full_name || profile.nickname || profile.email || 'Trader',
+    avatar: profile.avatar_url || '',
+  } : undefined,
+});
+
+const serializeSupportMessage = (row) => ({
+  id: row.id,
+  ticketId: row.ticket_id,
+  userId: row.user_id,
+  senderRole: row.sender_role || 'user',
+  body: row.body || '',
+  attachmentUrl: row.attachment_url || '',
+  createdAt: row.created_at,
+});
+
+const loadSupportTicket = async (ticketId) => {
+  const { data, error } = await dbFrom(SUPPORT_TICKET_TABLE)
+    .select('id,user_id,account_id,subject,category,priority,status,last_message_at,assigned_to,created_at,updated_at')
+    .eq('id', String(ticketId || ''))
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+};
+
+const loadSupportMessages = async (ticketId) => {
+  const { data, error } = await dbFrom(SUPPORT_MESSAGE_TABLE)
+    .select('id,ticket_id,user_id,sender_role,body,attachment_url,created_at')
+    .eq('ticket_id', String(ticketId || ''))
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data || []).map(serializeSupportMessage);
+};
+
+const loadSupportProfiles = async (userIds) => {
+  const ids = [...new Set((userIds || []).filter(Boolean))];
+  if (!ids.length) return new Map();
+  const profiles = new Map();
+  for (const id of ids) {
+    const { data, error } = await dbFrom('tradevault_user_profiles')
+      .select('user_id,email,full_name,avatar_url,nickname')
+      .eq('user_id', id)
+      .maybeSingle();
+    if (error) throw error;
+    if (data) profiles.set(data.user_id, data);
+  }
+  return profiles;
+};
+
+const getSupportAgent = async (userId) => {
+  if (!userId) return null;
+  const { data, error } = await dbFrom(SUPPORT_AGENT_TABLE)
+    .select('user_id,role,display_name,created_at')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+};
+
+const requireSupportAgent = async (req, res) => {
+  try {
+    const agent = await getSupportAgent(req.user.id);
+    if (!agent) {
+      res.status(403).json({ error: 'Support agent access required' });
+      return null;
+    }
+    return agent;
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Could not verify support agent access' });
+    return null;
+  }
+};
+
+const ensureUserSupportTicket = async (req, res, ticketId) => {
+  try {
+    const ticket = await loadSupportTicket(ticketId);
+    if (!ticket) {
+      res.status(404).json({ error: 'Support ticket not found' });
+      return null;
+    }
+    if (ticket.user_id !== req.user.id) {
+      res.status(403).json({ error: 'This support ticket belongs to another user' });
+      return null;
+    }
+    return ticket;
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Could not load support ticket' });
+    return null;
+  }
+};
+
+const touchSupportTicket = async (ticketId, patch = {}) => {
+  const now = new Date().toISOString();
+  const update = {
+    updated_at: now,
+    ...patch,
+  };
+  if (!('last_message_at' in update)) update.last_message_at = now;
+  const { data, error } = await dbFrom(SUPPORT_TICKET_TABLE)
+    .update(update)
+    .eq('id', String(ticketId))
+    .select('id,user_id,account_id,subject,category,priority,status,last_message_at,assigned_to,created_at,updated_at')
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+};
+
+const notifySupportTicket = (type, ticket) => {
+  if (!ticket) return;
+  io.to(`user:${ticket.user_id}`).emit(type, {
+    type,
+    data: { ticketId: ticket.id },
+    timestamp: Date.now(),
+  });
+  io.to('support:agents').emit(type, {
+    type,
+    data: { ticketId: ticket.id, userId: ticket.user_id },
+    timestamp: Date.now(),
+  });
+};
+
 const revokeShareLinksForAccount = async (accountId, userId) => {
   if (!supabase || !accountId || !userId) return;
   const { error } = await dbFrom('tradevault_share_links')
@@ -1336,6 +1589,11 @@ io.use(async (socket, next) => {
 io.on('connection', (socket) => {
   const userId = socket.user.id;
   socket.join(`user:${userId}`);
+  getSupportAgent(userId)
+    .then(agent => {
+      if (agent) socket.join('support:agents');
+    })
+    .catch(err => logDbError(`support socket agent:${userId}`, err));
   console.log(`[Socket.io] Client connected: ${socket.id} user=${userId}`);
   socket.emit('INIT', {
     type:      'INIT',
@@ -1587,6 +1845,19 @@ eaRouter.use(async (req, res, next) => {
 
   const ownerId = await lookupEaKeyOwner(key);
   if (!ownerId) return res.status(401).json({ error: 'Unauthorized EA key' });
+
+  const paidProof = readEaProductProof(req);
+  if (wantsPaidEaAccess(paidProof)) {
+    if (!CONFIG.PAID_EA_BUILD_TOKEN) {
+      return res.status(503).json({
+        error: 'Paid EA support is not configured on the server. Set PAID_EA_BUILD_TOKEN in the backend environment.',
+      });
+    }
+    if (!isValidPaidEaProof(paidProof)) {
+      return res.status(403).json({ error: 'Invalid paid EA build token' });
+    }
+    await markUserPaidFromEa(ownerId, paidProof);
+  }
 
   const license = await ensureUserLicense({ id: ownerId, email: '' });
   if (!license?.hasFullAccess) {
@@ -2723,6 +2994,269 @@ app.post('/api/auth/ea-key/rotate', async (req, res) => {
     keyPrefix,
     message: 'Copy this key into the EAApiKey input. It is shown only once.',
   });
+});
+
+app.get('/api/support/tickets', async (req, res) => {
+  try {
+    const { data, error } = await dbFrom(SUPPORT_TICKET_TABLE)
+      .select('id,user_id,account_id,subject,category,priority,status,last_message_at,assigned_to,created_at,updated_at')
+      .eq('user_id', req.user.id)
+      .order('last_message_at', { ascending: false })
+      .limit(100);
+    if (error) throw error;
+    res.json({ tickets: (data || []).map(row => serializeSupportTicket(row)) });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Could not load support tickets' });
+  }
+});
+
+app.post('/api/support/tickets', async (req, res) => {
+  try {
+    const subject = cleanSupportText(req.body?.subject, 120);
+    const body = cleanSupportText(req.body?.body, 8000);
+    const accountId = cleanSupportText(req.body?.accountId, 64);
+    const category = normalizeSupportOption(req.body?.category, SUPPORT_CATEGORIES, 'general');
+    const priority = normalizeSupportOption(req.body?.priority, SUPPORT_PRIORITIES, 'normal');
+
+    if (subject.length < 3) return res.status(400).json({ error: 'Subject must be at least 3 characters' });
+    if (body.length < 5) return res.status(400).json({ error: 'Message must be at least 5 characters' });
+    if (accountId && !userOwnsAccount(req.user.id, accountId)) {
+      return res.status(403).json({ error: `Account ${accountId} is not linked to your user` });
+    }
+
+    const now = new Date().toISOString();
+    const ticketInsert = await dbFrom(SUPPORT_TICKET_TABLE)
+      .insert({
+        user_id: req.user.id,
+        account_id: accountId || null,
+        subject,
+        category,
+        priority,
+        status: 'open',
+        last_message_at: now,
+        created_at: now,
+        updated_at: now,
+      })
+      .select('id,user_id,account_id,subject,category,priority,status,last_message_at,assigned_to,created_at,updated_at')
+      .single();
+    if (ticketInsert.error) throw ticketInsert.error;
+
+    const messageInsert = await dbFrom(SUPPORT_MESSAGE_TABLE)
+      .insert({
+        ticket_id: ticketInsert.data.id,
+        user_id: req.user.id,
+        sender_role: 'user',
+        body,
+        created_at: now,
+      })
+      .select('id,ticket_id,user_id,sender_role,body,attachment_url,created_at')
+      .single();
+    if (messageInsert.error) throw messageInsert.error;
+
+    notifySupportTicket('SUPPORT_TICKET_CREATED', ticketInsert.data);
+    res.status(201).json({
+      ticket: serializeSupportTicket(ticketInsert.data),
+      messages: [serializeSupportMessage(messageInsert.data)],
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Could not create support ticket' });
+  }
+});
+
+app.get('/api/support/tickets/:ticketId', async (req, res) => {
+  const ticket = await ensureUserSupportTicket(req, res, req.params.ticketId);
+  if (!ticket) return;
+  try {
+    const messages = await loadSupportMessages(ticket.id);
+    res.json({ ticket: serializeSupportTicket(ticket), messages });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Could not load support messages' });
+  }
+});
+
+app.post('/api/support/tickets/:ticketId/messages', async (req, res) => {
+  const ticket = await ensureUserSupportTicket(req, res, req.params.ticketId);
+  if (!ticket) return;
+  if (ticket.status === 'closed') {
+    return res.status(409).json({ error: 'This ticket is closed. Reopen it before sending a new message.' });
+  }
+
+  try {
+    const body = cleanSupportText(req.body?.body, 8000);
+    if (body.length < 1) return res.status(400).json({ error: 'Message is required' });
+
+    const now = new Date().toISOString();
+    const { data, error } = await dbFrom(SUPPORT_MESSAGE_TABLE)
+      .insert({
+        ticket_id: ticket.id,
+        user_id: req.user.id,
+        sender_role: 'user',
+        body,
+        created_at: now,
+      })
+      .select('id,ticket_id,user_id,sender_role,body,attachment_url,created_at')
+      .single();
+    if (error) throw error;
+
+    const updatedTicket = await touchSupportTicket(ticket.id, { status: 'open', last_message_at: now });
+    notifySupportTicket('SUPPORT_MESSAGE_CREATED', updatedTicket || ticket);
+    res.status(201).json({
+      ticket: serializeSupportTicket(updatedTicket || ticket),
+      message: serializeSupportMessage(data),
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Could not send support message' });
+  }
+});
+
+app.patch('/api/support/tickets/:ticketId/status', async (req, res) => {
+  const ticket = await ensureUserSupportTicket(req, res, req.params.ticketId);
+  if (!ticket) return;
+  const status = normalizeSupportOption(req.body?.status, SUPPORT_STATUSES, '');
+  if (!['open', 'closed'].includes(status)) {
+    return res.status(400).json({ error: 'Users can only reopen or close their own tickets' });
+  }
+
+  try {
+    const updatedTicket = await touchSupportTicket(ticket.id, { status });
+    notifySupportTicket('SUPPORT_TICKET_UPDATED', updatedTicket || ticket);
+    res.json({ ticket: serializeSupportTicket(updatedTicket || ticket) });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Could not update support ticket' });
+  }
+});
+
+app.get('/api/support/admin/tickets', async (req, res) => {
+  const agent = await requireSupportAgent(req, res);
+  if (!agent) return;
+
+  try {
+    const status = normalizeSupportOption(req.query.status, SUPPORT_STATUSES, '');
+    const priority = normalizeSupportOption(req.query.priority, SUPPORT_PRIORITIES, '');
+    const category = normalizeSupportOption(req.query.category, SUPPORT_CATEGORIES, '');
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 200, 500));
+
+    let query = dbFrom(SUPPORT_TICKET_TABLE)
+      .select('id,user_id,account_id,subject,category,priority,status,last_message_at,assigned_to,created_at,updated_at')
+      .order('last_message_at', { ascending: false })
+      .limit(limit);
+    if (status) query = query.eq('status', status);
+    if (priority) query = query.eq('priority', priority);
+    if (category) query = query.eq('category', category);
+
+    const { data, error } = await query;
+    if (error) throw error;
+
+    const profiles = await loadSupportProfiles((data || []).map(row => row.user_id));
+    res.json({
+      tickets: (data || []).map(row => serializeSupportTicket(row, profiles.get(row.user_id))),
+      agent: {
+        userId: agent.user_id,
+        role: agent.role,
+        displayName: agent.display_name || req.user.name,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Could not load support admin tickets' });
+  }
+});
+
+app.get('/api/support/admin/tickets/:ticketId', async (req, res) => {
+  const agent = await requireSupportAgent(req, res);
+  if (!agent) return;
+
+  try {
+    const ticket = await loadSupportTicket(req.params.ticketId);
+    if (!ticket) return res.status(404).json({ error: 'Support ticket not found' });
+    const profiles = await loadSupportProfiles([ticket.user_id]);
+    const messages = await loadSupportMessages(ticket.id);
+    res.json({
+      ticket: serializeSupportTicket(ticket, profiles.get(ticket.user_id)),
+      messages,
+      agent: {
+        userId: agent.user_id,
+        role: agent.role,
+        displayName: agent.display_name || req.user.name,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Could not load support admin ticket' });
+  }
+});
+
+app.post('/api/support/admin/tickets/:ticketId/messages', async (req, res) => {
+  const agent = await requireSupportAgent(req, res);
+  if (!agent) return;
+
+  try {
+    const ticket = await loadSupportTicket(req.params.ticketId);
+    if (!ticket) return res.status(404).json({ error: 'Support ticket not found' });
+
+    const body = cleanSupportText(req.body?.body, 8000);
+    if (body.length < 1) return res.status(400).json({ error: 'Message is required' });
+
+    const nextStatus = normalizeSupportOption(req.body?.status, SUPPORT_STATUSES, 'pending');
+    const now = new Date().toISOString();
+    const { data, error } = await dbFrom(SUPPORT_MESSAGE_TABLE)
+      .insert({
+        ticket_id: ticket.id,
+        user_id: req.user.id,
+        sender_role: 'agent',
+        body,
+        created_at: now,
+      })
+      .select('id,ticket_id,user_id,sender_role,body,attachment_url,created_at')
+      .single();
+    if (error) throw error;
+
+    const updatedTicket = await touchSupportTicket(ticket.id, {
+      status: nextStatus,
+      assigned_to: ticket.assigned_to || req.user.id,
+      last_message_at: now,
+    });
+    notifySupportTicket('SUPPORT_MESSAGE_CREATED', updatedTicket || ticket);
+    res.status(201).json({
+      ticket: serializeSupportTicket(updatedTicket || ticket),
+      message: serializeSupportMessage(data),
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Could not send support admin reply' });
+  }
+});
+
+app.patch('/api/support/admin/tickets/:ticketId', async (req, res) => {
+  const agent = await requireSupportAgent(req, res);
+  if (!agent) return;
+
+  try {
+    const ticket = await loadSupportTicket(req.params.ticketId);
+    if (!ticket) return res.status(404).json({ error: 'Support ticket not found' });
+
+    const patch = {};
+    if (req.body?.status !== undefined) {
+      const status = normalizeSupportOption(req.body.status, SUPPORT_STATUSES, '');
+      if (!status) return res.status(400).json({ error: 'Invalid support status' });
+      patch.status = status;
+    }
+    if (req.body?.priority !== undefined) {
+      const priority = normalizeSupportOption(req.body.priority, SUPPORT_PRIORITIES, '');
+      if (!priority) return res.status(400).json({ error: 'Invalid support priority' });
+      patch.priority = priority;
+    }
+    if (req.body?.category !== undefined) {
+      const category = normalizeSupportOption(req.body.category, SUPPORT_CATEGORIES, '');
+      if (!category) return res.status(400).json({ error: 'Invalid support category' });
+      patch.category = category;
+    }
+    if (req.body?.assignToMe) patch.assigned_to = req.user.id;
+    if (req.body?.clearAssignee) patch.assigned_to = null;
+
+    const updatedTicket = await touchSupportTicket(ticket.id, patch);
+    notifySupportTicket('SUPPORT_TICKET_UPDATED', updatedTicket || ticket);
+    res.json({ ticket: serializeSupportTicket(updatedTicket || ticket) });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Could not update support admin ticket' });
+  }
 });
 
 app.get('/api/share-links', async (req, res) => {

@@ -160,6 +160,66 @@ create index if not exists tradevault_share_links_user_id_idx
 create index if not exists tradevault_share_links_account_id_idx
   on public.tradevault_share_links (account_id);
 
+create table if not exists public.tradevault_support_agents (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  role text not null default 'agent',
+  display_name text,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.tradevault_support_tickets (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  account_id text,
+  subject text not null,
+  category text not null default 'general',
+  priority text not null default 'normal',
+  status text not null default 'open',
+  last_message_at timestamptz not null default now(),
+  assigned_to uuid references auth.users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.tradevault_support_tickets
+  add column if not exists user_id uuid references auth.users(id) on delete cascade,
+  add column if not exists account_id text,
+  add column if not exists subject text,
+  add column if not exists category text not null default 'general',
+  add column if not exists priority text not null default 'normal',
+  add column if not exists status text not null default 'open',
+  add column if not exists last_message_at timestamptz not null default now(),
+  add column if not exists assigned_to uuid references auth.users(id),
+  add column if not exists created_at timestamptz not null default now(),
+  add column if not exists updated_at timestamptz not null default now();
+
+create table if not exists public.tradevault_support_messages (
+  id uuid primary key default gen_random_uuid(),
+  ticket_id uuid not null references public.tradevault_support_tickets(id) on delete cascade,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  sender_role text not null default 'user',
+  body text not null,
+  attachment_url text,
+  created_at timestamptz not null default now()
+);
+
+alter table public.tradevault_support_messages
+  add column if not exists ticket_id uuid references public.tradevault_support_tickets(id) on delete cascade,
+  add column if not exists user_id uuid references auth.users(id) on delete cascade,
+  add column if not exists sender_role text not null default 'user',
+  add column if not exists body text,
+  add column if not exists attachment_url text,
+  add column if not exists created_at timestamptz not null default now();
+
+create index if not exists tradevault_support_tickets_user_status_idx
+  on public.tradevault_support_tickets (user_id, status, last_message_at desc);
+
+create index if not exists tradevault_support_tickets_status_priority_idx
+  on public.tradevault_support_tickets (status, priority, last_message_at desc);
+
+create index if not exists tradevault_support_messages_ticket_idx
+  on public.tradevault_support_messages (ticket_id, created_at asc);
+
 alter table public.tradevault_kv_store enable row level security;
 alter table public.tradevault_account_settings enable row level security;
 alter table public.tradevault_account_alerts enable row level security;
@@ -171,6 +231,77 @@ alter table public.tradevault_account_deletions enable row level security;
 alter table public.tradevault_user_ea_keys enable row level security;
 alter table public.tradevault_direct_mt_accounts enable row level security;
 alter table public.tradevault_share_links enable row level security;
+alter table public.tradevault_support_agents enable row level security;
+alter table public.tradevault_support_tickets enable row level security;
+alter table public.tradevault_support_messages enable row level security;
+
+drop policy if exists support_agents_select_own on public.tradevault_support_agents;
+create policy support_agents_select_own
+  on public.tradevault_support_agents
+  for select
+  using (auth.uid() = user_id);
+
+drop policy if exists support_tickets_select_own on public.tradevault_support_tickets;
+create policy support_tickets_select_own
+  on public.tradevault_support_tickets
+  for select
+  using (
+    auth.uid() = user_id
+    or exists (
+      select 1 from public.tradevault_support_agents a
+      where a.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists support_tickets_insert_own on public.tradevault_support_tickets;
+create policy support_tickets_insert_own
+  on public.tradevault_support_tickets
+  for insert
+  with check (auth.uid() = user_id);
+
+drop policy if exists support_tickets_update_own_or_agent on public.tradevault_support_tickets;
+create policy support_tickets_update_own_or_agent
+  on public.tradevault_support_tickets
+  for update
+  using (
+    auth.uid() = user_id
+    or exists (
+      select 1 from public.tradevault_support_agents a
+      where a.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists support_messages_select_own_or_agent on public.tradevault_support_messages;
+create policy support_messages_select_own_or_agent
+  on public.tradevault_support_messages
+  for select
+  using (
+    exists (
+      select 1 from public.tradevault_support_tickets t
+      where t.id = ticket_id
+        and t.user_id = auth.uid()
+    )
+    or exists (
+      select 1 from public.tradevault_support_agents a
+      where a.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists support_messages_insert_own_or_agent on public.tradevault_support_messages;
+create policy support_messages_insert_own_or_agent
+  on public.tradevault_support_messages
+  for insert
+  with check (
+    exists (
+      select 1 from public.tradevault_support_tickets t
+      where t.id = ticket_id
+        and t.user_id = auth.uid()
+    )
+    or exists (
+      select 1 from public.tradevault_support_agents a
+      where a.user_id = auth.uid()
+    )
+  );
 
 -- Admin/reporting helper.
 -- View this in Supabase Table Editor to see each profile, linked MT5 account,
