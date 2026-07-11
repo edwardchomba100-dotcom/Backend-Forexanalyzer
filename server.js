@@ -339,6 +339,13 @@ const CONFIG = {
   PAID_EA_URL:               process.env.PAID_EA_URL || 'https://www.mql5.com/en/market/product/182969',
   PAID_EA_BUILD_TOKEN:       process.env.PAID_EA_BUILD_TOKEN || '',
 
+  FRONTEND_URL:              (process.env.FRONTEND_URL || 'https://forexanalyzerpro.com').replace(/\/+$/, ''),
+  SUPPORT_ADMIN_EMAILS:      process.env.SUPPORT_ADMIN_EMAILS || 'ianchomba734@gmail.com',
+  SUPPORT_NOTIFY_EMAIL:      process.env.SUPPORT_NOTIFY_EMAIL || process.env.SUPPORT_ADMIN_EMAILS || 'ianchomba734@gmail.com',
+  SUPPORT_FROM_EMAIL:        process.env.SUPPORT_FROM_EMAIL || 'ForexAnalyzer Pro <support@forexanalyzerpro.com>',
+  RESEND_API_KEY:            process.env.RESEND_API_KEY || '',
+  REFERRAL_BONUS_DAYS:       +(process.env.REFERRAL_BONUS_DAYS || 7),
+
   METAAPI_TOKEN:             process.env.METAAPI_TOKEN || '',
   METAAPI_PROVISIONING_URL:  (process.env.METAAPI_PROVISIONING_URL || 'https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai').replace(/\/+$/, ''),
   METAAPI_CLIENT_API_URL:    (process.env.METAAPI_CLIENT_API_URL || 'https://mt-client-api-v1.new-york.agiliumtrade.ai').replace(/\/+$/, ''),
@@ -364,6 +371,7 @@ const g_accountOwners           = new Map();
 const g_eaKeyOwners             = new Map();
 const g_authTokenCache          = new Map();
 const g_profileUpsertAt         = new Map();
+const g_welcomeEmailsQueued     = new Set();
 const g_userLicenseCache        = new Map();
 const g_accountDeletionMarkers  = new Map();
 const g_historySignatures       = new Map();
@@ -511,6 +519,12 @@ const upsertUserProfile = (user) => {
   g_profileUpsertAt.set(user.id, Date.now());
   const clean = sanitizeUser(user);
   runDbTask(`profile:${user.id}`, async () => {
+    const existing = await dbFrom('tradevault_user_profiles')
+      .select('user_id')
+      .eq('user_id', clean.id)
+      .maybeSingle();
+    if (existing.error) throw existing.error;
+
     const { error } = await dbFrom('tradevault_user_profiles').upsert({
       user_id: clean.id,
       email: clean.email,
@@ -519,6 +533,11 @@ const upsertUserProfile = (user) => {
       updated_at: new Date().toISOString(),
     }, { onConflict: 'user_id' });
     if (error) throw error;
+
+    if (!existing.data && clean.email && !g_welcomeEmailsQueued.has(clean.id)) {
+      g_welcomeEmailsQueued.add(clean.id);
+      queueEmailTask(`welcome:${clean.id}`, () => sendWelcomeEmail(clean));
+    }
   });
 };
 
@@ -807,6 +826,7 @@ const attachTrialLicense = async (req, res, next) => {
 
 const isDashboardReadRequest = (req) => {
   if (req.path === '/auth/me') return true;
+  if (req.path.startsWith('/referrals')) return true;
   if (req.path.startsWith('/support')) return true;
   if (req.method !== 'GET') return false;
   if (req.path === '/accounts') return true;
@@ -1376,6 +1396,9 @@ const serializeShareLink = (row) => ({
 const SUPPORT_TICKET_TABLE = 'tradevault_support_tickets';
 const SUPPORT_MESSAGE_TABLE = 'tradevault_support_messages';
 const SUPPORT_AGENT_TABLE = 'tradevault_support_agents';
+const REFERRAL_CODE_TABLE = 'tradevault_referral_codes';
+const REFERRAL_TABLE = 'tradevault_referrals';
+const FEEDBACK_TABLE = 'tradevault_feedback_responses';
 
 const SUPPORT_CATEGORIES = new Set([
   'account_connection',
@@ -1394,6 +1417,36 @@ const cleanSupportText = (value, maxLength) =>
     .replace(/\u0000/g, '')
     .trim()
     .slice(0, maxLength);
+
+const splitEmailList = (value) =>
+  String(value || '')
+    .split(/[,\s;]+/)
+    .map(email => email.trim())
+    .filter(Boolean);
+
+const htmlEscape = (value) =>
+  String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const emailText = (value, maxLength = 1200) => {
+  const text = String(value || '').trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, maxLength - 1)}...`;
+};
+
+const supportUrl = (pathName) =>
+  `${CONFIG.FRONTEND_URL}${String(pathName || '/support').startsWith('/') ? '' : '/'}${pathName || '/support'}`;
+
+const isConfiguredSupportAdminEmail = (email) => {
+  const target = String(email || '').trim().toLowerCase();
+  if (!target) return false;
+  return splitEmailList(CONFIG.SUPPORT_ADMIN_EMAILS)
+    .some(adminEmail => adminEmail.toLowerCase() === target);
+};
 
 const normalizeSupportOption = (value, allowed, fallback) => {
   const normalized = String(value || fallback).toLowerCase().replace(/[^a-z0-9_]/g, '_');
@@ -1463,19 +1516,355 @@ const loadSupportProfiles = async (userIds) => {
   return profiles;
 };
 
-const getSupportAgent = async (userId) => {
+const sendResendEmail = async ({ to, subject, html, text, tags = [], idempotencyKey = '' }) => {
+  if (!CONFIG.RESEND_API_KEY || !CONFIG.SUPPORT_FROM_EMAIL) {
+    return { skipped: true, reason: 'Email notifications are not configured' };
+  }
+
+  const recipients = splitEmailList(Array.isArray(to) ? to.join(',') : to);
+  if (!recipients.length) return { skipped: true, reason: 'No email recipients' };
+
+  const res = await nodeHttpsFetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${CONFIG.RESEND_API_KEY}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}),
+    },
+    body: JSON.stringify({
+      from: CONFIG.SUPPORT_FROM_EMAIL,
+      to: recipients,
+      subject,
+      html,
+      text,
+      tags,
+    }),
+  });
+
+  const payload = await safeJsonFromResponse(res);
+  if (!res.ok) {
+    const error = new Error(payload?.message || payload?.error || `Resend email failed (${res.status})`);
+    error.payload = payload;
+    error.statusCode = res.status;
+    throw error;
+  }
+  return payload;
+};
+
+const queueEmailTask = (label, task) => {
+  Promise.resolve()
+    .then(task)
+    .catch(error => {
+      const message = error?.message || String(error);
+      console.warn(`[Email] ${label}: ${message}`);
+    });
+};
+
+const supportEmailShell = ({ title, intro, rows = [], message, ctaLabel, ctaUrl }) => {
+  const rowHtml = rows
+    .filter(row => row?.value !== undefined && row?.value !== null && String(row.value).trim() !== '')
+    .map(row => `
+      <tr>
+        <td style="padding:8px 0;color:#64748b;font-size:13px;width:130px;">${htmlEscape(row.label)}</td>
+        <td style="padding:8px 0;color:#0f172a;font-size:13px;font-weight:600;">${htmlEscape(row.value)}</td>
+      </tr>
+    `)
+    .join('');
+
+  const safeMessage = htmlEscape(emailText(message || '', 1800)).replace(/\n/g, '<br />');
+  return `
+    <div style="margin:0;padding:0;background:#f8fafc;font-family:Arial,Helvetica,sans-serif;">
+      <div style="max-width:640px;margin:0 auto;padding:28px 16px;">
+        <div style="background:#020617;border-radius:16px;padding:22px 24px;color:#fff;">
+          <div style="font-size:12px;letter-spacing:0.16em;text-transform:uppercase;color:#22d3ee;font-weight:700;">ForexAnalyzer Pro</div>
+          <h1 style="margin:10px 0 0;font-size:24px;line-height:1.25;">${htmlEscape(title)}</h1>
+          <p style="margin:10px 0 0;color:#cbd5e1;font-size:14px;line-height:1.6;">${htmlEscape(intro)}</p>
+        </div>
+        <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;padding:22px 24px;margin-top:16px;">
+          ${rowHtml ? `<table style="width:100%;border-collapse:collapse;margin-bottom:16px;">${rowHtml}</table>` : ''}
+          ${safeMessage ? `
+            <div style="border-left:4px solid #06b6d4;background:#f8fafc;border-radius:8px;padding:14px 16px;color:#0f172a;font-size:14px;line-height:1.7;">
+              ${safeMessage}
+            </div>
+          ` : ''}
+          ${ctaUrl ? `
+            <a href="${htmlEscape(ctaUrl)}" style="display:inline-block;margin-top:20px;background:#06b6d4;color:#001018;text-decoration:none;font-weight:700;border-radius:10px;padding:12px 16px;">
+              ${htmlEscape(ctaLabel || 'Open ForexAnalyzer Pro')}
+            </a>
+          ` : ''}
+        </div>
+      </div>
+    </div>
+  `;
+};
+
+const sendWelcomeEmail = async (user) => {
+  if (!user?.email) return;
+  const dashboardLink = supportUrl('/dashboard');
+  await sendResendEmail({
+    to: user.email,
+    subject: 'Welcome to ForexAnalyzer Pro',
+    text: [
+      `Welcome ${user.name || 'Trader'},`,
+      '',
+      'Your ForexAnalyzer Pro account is ready. You can connect your MT5 Expert Advisor, watch live trades, review analytics, use the calendar, journal your trades, and manage alerts from your dashboard.',
+      '',
+      'Start by opening the dashboard, generating your EA API key, and pasting it into the EA inputs in MetaTrader 5.',
+      '',
+      dashboardLink,
+    ].join('\n'),
+    html: supportEmailShell({
+      title: 'Welcome to ForexAnalyzer Pro',
+      intro: 'Your trading analytics workspace is ready.',
+      rows: [
+        { label: 'Account', value: `${user.name || 'Trader'} <${user.email}>` },
+        { label: 'Trial', value: `${CONFIG.FREE_TRIAL_DAYS} days plus ${CONFIG.FREE_TRIAL_GRACE_DAYS} grace days` },
+      ],
+      message: [
+        'You can now connect your MT5 Expert Advisor, watch live open trades, review your analytics, use the trading calendar, keep a journal, and manage alerts from one dashboard.',
+        '',
+        'Open ForexAnalyzer Pro, generate your EA API key, paste it into the EA inputs in MetaTrader 5, and your account will start syncing.',
+      ].join('\n'),
+      ctaLabel: 'Open dashboard',
+      ctaUrl: dashboardLink,
+    }),
+    tags: [
+      { name: 'type', value: 'welcome' },
+      { name: 'user_id', value: String(user.id || '').replace(/[^a-zA-Z0-9_-]/g, '_') },
+    ],
+    idempotencyKey: `welcome-${user.id}`,
+  });
+};
+
+const sendAdminSupportEmail = async ({ ticket, user, body, kind }) => {
+  const recipients = CONFIG.SUPPORT_NOTIFY_EMAIL || CONFIG.SUPPORT_ADMIN_EMAILS;
+  if (!recipients) return;
+  const title = kind === 'reply' ? 'New customer reply' : 'New support ticket';
+  const adminLink = supportUrl(`/support-admin?ticketId=${encodeURIComponent(ticket.id)}`);
+  await sendResendEmail({
+    to: recipients,
+    subject: `[ForexAnalyzer Pro] ${title}: ${ticket.subject || ticket.id}`,
+    text: [
+      title,
+      `Customer: ${user?.name || 'Trader'} <${user?.email || 'unknown'}>`,
+      `Ticket: ${ticket.subject || ticket.id}`,
+      `Category: ${ticket.category || 'general'}`,
+      `Priority: ${ticket.priority || 'normal'}`,
+      ticket.account_id ? `Account: ${ticket.account_id}` : '',
+      '',
+      emailText(body || ''),
+      '',
+      adminLink,
+    ].filter(Boolean).join('\n'),
+    html: supportEmailShell({
+      title,
+      intro: 'A customer needs attention in the support inbox.',
+      rows: [
+        { label: 'Customer', value: `${user?.name || 'Trader'} <${user?.email || 'unknown'}>` },
+        { label: 'Ticket', value: ticket.subject || ticket.id },
+        { label: 'Category', value: ticket.category || 'general' },
+        { label: 'Priority', value: ticket.priority || 'normal' },
+        { label: 'Account', value: ticket.account_id || '' },
+      ],
+      message: body,
+      ctaLabel: 'Open support admin',
+      ctaUrl: adminLink,
+    }),
+    tags: [
+      { name: 'type', value: kind === 'reply' ? 'support_user_reply' : 'support_new_ticket' },
+      { name: 'ticket_id', value: String(ticket.id).replace(/[^a-zA-Z0-9_-]/g, '_') },
+    ],
+    idempotencyKey: `support-admin-${kind}-${ticket.id}-${Date.now()}`,
+  });
+};
+
+const sendCustomerSupportEmail = async ({ ticket, body }) => {
+  const profiles = await loadSupportProfiles([ticket.user_id]);
+  const profile = profiles.get(ticket.user_id);
+  if (!profile?.email) return;
+
+  const userLink = supportUrl(`/support/${encodeURIComponent(ticket.id)}`);
+  await sendResendEmail({
+    to: profile.email,
+    subject: `[ForexAnalyzer Pro] Support replied: ${ticket.subject || ticket.id}`,
+    text: [
+      'Support replied to your ticket.',
+      `Ticket: ${ticket.subject || ticket.id}`,
+      '',
+      emailText(body || ''),
+      '',
+      userLink,
+    ].join('\n'),
+    html: supportEmailShell({
+      title: 'Support replied to your ticket',
+      intro: 'A ForexAnalyzer Pro support agent has replied to your conversation.',
+      rows: [
+        { label: 'Ticket', value: ticket.subject || ticket.id },
+        { label: 'Status', value: ticket.status || 'pending' },
+        { label: 'Account', value: ticket.account_id || '' },
+      ],
+      message: body,
+      ctaLabel: 'Open support ticket',
+      ctaUrl: userLink,
+    }),
+    tags: [
+      { name: 'type', value: 'support_agent_reply' },
+      { name: 'ticket_id', value: String(ticket.id).replace(/[^a-zA-Z0-9_-]/g, '_') },
+    ],
+    idempotencyKey: `support-customer-reply-${ticket.id}-${Date.now()}`,
+  });
+};
+
+const cleanReferralCode = (value) =>
+  String(value || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]/g, '')
+    .slice(0, 32);
+
+const makeReferralCode = (userId) =>
+  `FAP-${publicHash(`${userId}:${crypto.randomBytes(12).toString('hex')}`, 10).toUpperCase()}`;
+
+const serializeReferralRow = (row, profile = null) => ({
+  id: row.id,
+  referrerUserId: row.referrer_user_id,
+  referredUserId: row.referred_user_id,
+  referralCode: row.referral_code,
+  awardedDays: row.awarded_days,
+  awardedAt: row.awarded_at,
+  createdAt: row.created_at,
+  referredUser: profile ? {
+    userId: profile.user_id,
+    email: profile.email || '',
+    name: profile.full_name || profile.nickname || profile.email || 'Trader',
+    avatar: profile.avatar_url || '',
+  } : undefined,
+});
+
+const ensureReferralCode = async (userId) => {
+  if (!supabase || !userId) return null;
+  const existing = await dbFrom(REFERRAL_CODE_TABLE)
+    .select('user_id,code,created_at')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (existing.error) throw existing.error;
+  if (existing.data?.code) return existing.data;
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const code = makeReferralCode(userId);
+    const inserted = await dbFrom(REFERRAL_CODE_TABLE)
+      .insert({ user_id: userId, code })
+      .select('user_id,code,created_at')
+      .maybeSingle();
+    if (!inserted.error) return inserted.data || { user_id: userId, code, created_at: new Date().toISOString() };
+    const duplicate = inserted.error.code === '23505' || /duplicate|unique/i.test(inserted.error.message || '');
+    if (!duplicate) throw inserted.error;
+  }
+  throw new Error('Could not create referral code');
+};
+
+const grantReferralBonus = async (referrerUserId, days = CONFIG.REFERRAL_BONUS_DAYS) => {
+  if (!supabase || !referrerUserId) return null;
+  const now = Date.now();
+  const existing = await dbFrom(TRIAL_LICENSE_TABLE)
+    .select(TRIAL_LICENSE_COLUMNS)
+    .eq('user_id', referrerUserId)
+    .maybeSingle();
+  if (existing.error) throw existing.error;
+
+  let row = existing.data;
+  if (!row) {
+    row = createDefaultTrialRow({ id: referrerUserId, email: '' }, now);
+    const inserted = await dbFrom(TRIAL_LICENSE_TABLE)
+      .insert(row)
+      .select(TRIAL_LICENSE_COLUMNS)
+      .maybeSingle();
+    if (inserted.error) throw inserted.error;
+    row = inserted.data || row;
+  }
+
+  if (row.plan_mode === 'paid' && !row.paid_until) return row;
+
+  const baseMs = Math.max(
+    now,
+    toMs(row.paid_until) || 0,
+    toMs(row.grace_ends_at) || 0,
+  );
+  const paidUntil = addDaysIso(baseMs, days);
+  const update = {
+    plan_mode: row.plan_mode === 'paid' ? 'paid' : 'referral_bonus',
+    paid_until: paidUntil,
+    updated_at: new Date().toISOString(),
+  };
+  const updated = await dbFrom(TRIAL_LICENSE_TABLE)
+    .update(update)
+    .eq('user_id', referrerUserId);
+  if (updated.error) throw updated.error;
+  clearUserLicenseCache(referrerUserId);
+  return { ...row, ...update };
+};
+
+const applyReferralIfPresent = async (referredUser, rawCode) => {
+  const code = cleanReferralCode(rawCode);
+  if (!supabase || !referredUser?.id || !code) return null;
+
+  const existingReferral = await dbFrom(REFERRAL_TABLE)
+    .select('id,referrer_user_id,referred_user_id,referral_code,awarded_days,awarded_at,created_at')
+    .eq('referred_user_id', referredUser.id)
+    .maybeSingle();
+  if (existingReferral.error) throw existingReferral.error;
+  if (existingReferral.data) return existingReferral.data;
+
+  const codeRow = await dbFrom(REFERRAL_CODE_TABLE)
+    .select('user_id,code,created_at')
+    .eq('code', code)
+    .maybeSingle();
+  if (codeRow.error) throw codeRow.error;
+  if (!codeRow.data || codeRow.data.user_id === referredUser.id) return null;
+
+  const inserted = await dbFrom(REFERRAL_TABLE)
+    .insert({
+      referrer_user_id: codeRow.data.user_id,
+      referred_user_id: referredUser.id,
+      referral_code: code,
+      awarded_days: CONFIG.REFERRAL_BONUS_DAYS,
+    })
+    .select('id,referrer_user_id,referred_user_id,referral_code,awarded_days,awarded_at,created_at')
+    .maybeSingle();
+  if (inserted.error) throw inserted.error;
+
+  await grantReferralBonus(codeRow.data.user_id, CONFIG.REFERRAL_BONUS_DAYS);
+  return inserted.data;
+};
+
+const getSupportAgent = async (userId, email = '', name = '') => {
   if (!userId) return null;
+  const configuredAdmin = isConfiguredSupportAdminEmail(email)
+    ? {
+        user_id: userId,
+        role: 'admin',
+        display_name: name || email || 'Support Admin',
+        created_at: null,
+        source: 'email',
+      }
+    : null;
+
   const { data, error } = await dbFrom(SUPPORT_AGENT_TABLE)
     .select('user_id,role,display_name,created_at')
     .eq('user_id', userId)
     .maybeSingle();
-  if (error) throw error;
-  return data || null;
+  if (error) {
+    const missingTable = error.code === '42P01' || /tradevault_support_agents/i.test(error.message || '');
+    if (missingTable && configuredAdmin) return configuredAdmin;
+    throw error;
+  }
+  return data || configuredAdmin;
 };
 
 const requireSupportAgent = async (req, res) => {
   try {
-    const agent = await getSupportAgent(req.user.id);
+    const agent = await getSupportAgent(req.user.id, req.user.email, req.user.name);
     if (!agent) {
       res.status(403).json({ error: 'Support agent access required' });
       return null;
@@ -1589,7 +1978,7 @@ io.use(async (socket, next) => {
 io.on('connection', (socket) => {
   const userId = socket.user.id;
   socket.join(`user:${userId}`);
-  getSupportAgent(userId)
+  getSupportAgent(userId, socket.user.email, socket.user.name)
     .then(agent => {
       if (agent) socket.join('support:agents');
     })
@@ -2947,6 +3336,46 @@ app.get('/public/share/:token', async (req, res) => {
   });
 });
 
+app.post('/api/public/feedback', async (req, res) => {
+  if (!supabase) return res.status(503).json({ error: 'Database is not configured' });
+
+  try {
+    const token = getBearerToken(req);
+    const authUser = token ? await getAuthenticatedUser(token) : null;
+    if (authUser) upsertUserProfile(authUser);
+    const user = authUser ? sanitizeUser(authUser) : null;
+
+    const rawScore = Number(req.body?.score);
+    const score = Number.isFinite(rawScore)
+      ? Math.max(1, Math.min(10, Math.round(rawScore)))
+      : null;
+    const responses = req.body?.responses && typeof req.body.responses === 'object'
+      ? req.body.responses
+      : {};
+    const pagePath = cleanSupportText(req.body?.pagePath || req.body?.page_path, 240);
+    const sessionId = cleanSupportText(req.body?.sessionId || req.body?.session_id, 120);
+    const deviceHash = getTrialDeviceHash(req);
+    const userAgent = cleanSupportText(req.headers['user-agent'], 500);
+
+    const { error } = await dbFrom(FEEDBACK_TABLE).insert({
+      user_id: user?.id || null,
+      email: user?.email || cleanSupportText(req.body?.email, 240) || null,
+      device_id_hash: deviceHash,
+      session_id: sessionId || null,
+      page_path: pagePath || null,
+      score,
+      responses,
+      user_agent: userAgent || null,
+      created_at: new Date().toISOString(),
+    });
+    if (error) throw error;
+    res.status(201).json({ success: true });
+  } catch (error) {
+    logDbError('public feedback', error);
+    res.status(500).json({ error: error.message || 'Could not save feedback' });
+  }
+});
+
 app.use('/api', requireUser);
 app.use('/api', attachTrialLicense);
 app.use('/api', enforceTrialAccess);
@@ -2962,11 +3391,69 @@ app.get('/api/auth/me', async (req, res) => {
     : { data: [], error: null };
 
   if (keyRows.error) return res.status(500).json({ error: keyRows.error.message });
+
+  let supportAgent = null;
+  let referralCodeRow = null;
+  let acceptedReferral = null;
+  const pendingReferralCode = firstValue(
+    req.headers['x-fap-referral-code'],
+    req.query.ref,
+    req.query.referralCode,
+  );
+
+  try {
+    supportAgent = await getSupportAgent(req.user.id, req.user.email, req.user.name);
+  } catch (error) {
+    logDbError(`auth support agent:${req.user.id}`, error);
+  }
+
+  try {
+    if (pendingReferralCode) acceptedReferral = await applyReferralIfPresent(req.user, pendingReferralCode);
+    referralCodeRow = await ensureReferralCode(req.user.id);
+  } catch (error) {
+    logDbError(`auth referral:${req.user.id}`, error);
+  }
+
   res.json({
     user: req.user,
     eaKey: keyRows.data?.[0] || null,
     license: req.license,
+    supportAgent: supportAgent ? {
+      userId: supportAgent.user_id,
+      role: supportAgent.role,
+      displayName: supportAgent.display_name || req.user.name,
+    } : null,
+    referral: referralCodeRow ? {
+      code: referralCodeRow.code,
+      link: `${CONFIG.FRONTEND_URL}/?ref=${encodeURIComponent(referralCodeRow.code)}`,
+      bonusDays: CONFIG.REFERRAL_BONUS_DAYS,
+      accepted: acceptedReferral ? serializeReferralRow(acceptedReferral) : null,
+    } : null,
   });
+});
+
+app.get('/api/referrals/me', async (req, res) => {
+  try {
+    const codeRow = await ensureReferralCode(req.user.id);
+    let rows = [];
+    const referralRows = await dbFrom(REFERRAL_TABLE)
+      .select('id,referrer_user_id,referred_user_id,referral_code,awarded_days,awarded_at,created_at')
+      .eq('referrer_user_id', req.user.id)
+      .order('created_at', { ascending: false })
+      .limit(200);
+    if (referralRows.error) throw referralRows.error;
+    rows = referralRows.data || [];
+
+    const profiles = await loadSupportProfiles(rows.map(row => row.referred_user_id));
+    res.json({
+      code: codeRow?.code || null,
+      link: codeRow?.code ? `${CONFIG.FRONTEND_URL}/?ref=${encodeURIComponent(codeRow.code)}` : null,
+      bonusDays: CONFIG.REFERRAL_BONUS_DAYS,
+      referrals: rows.map(row => serializeReferralRow(row, profiles.get(row.referred_user_id))),
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Could not load referrals' });
+  }
 });
 
 app.post('/api/auth/ea-key/rotate', async (req, res) => {
@@ -3054,6 +3541,13 @@ app.post('/api/support/tickets', async (req, res) => {
     if (messageInsert.error) throw messageInsert.error;
 
     notifySupportTicket('SUPPORT_TICKET_CREATED', ticketInsert.data);
+    queueEmailTask('support new ticket', () =>
+      sendAdminSupportEmail({
+        ticket: ticketInsert.data,
+        user: req.user,
+        body,
+        kind: 'new',
+      }));
     res.status(201).json({
       ticket: serializeSupportTicket(ticketInsert.data),
       messages: [serializeSupportMessage(messageInsert.data)],
@@ -3100,6 +3594,13 @@ app.post('/api/support/tickets/:ticketId/messages', async (req, res) => {
 
     const updatedTicket = await touchSupportTicket(ticket.id, { status: 'open', last_message_at: now });
     notifySupportTicket('SUPPORT_MESSAGE_CREATED', updatedTicket || ticket);
+    queueEmailTask('support user reply', () =>
+      sendAdminSupportEmail({
+        ticket: updatedTicket || ticket,
+        user: req.user,
+        body,
+        kind: 'reply',
+      }));
     res.status(201).json({
       ticket: serializeSupportTicket(updatedTicket || ticket),
       message: serializeSupportMessage(data),
@@ -3215,6 +3716,11 @@ app.post('/api/support/admin/tickets/:ticketId/messages', async (req, res) => {
       last_message_at: now,
     });
     notifySupportTicket('SUPPORT_MESSAGE_CREATED', updatedTicket || ticket);
+    queueEmailTask('support agent reply', () =>
+      sendCustomerSupportEmail({
+        ticket: updatedTicket || ticket,
+        body,
+      }));
     res.status(201).json({
       ticket: serializeSupportTicket(updatedTicket || ticket),
       message: serializeSupportMessage(data),
@@ -3256,6 +3762,68 @@ app.patch('/api/support/admin/tickets/:ticketId', async (req, res) => {
     res.json({ ticket: serializeSupportTicket(updatedTicket || ticket) });
   } catch (error) {
     res.status(500).json({ error: error.message || 'Could not update support admin ticket' });
+  }
+});
+
+app.get('/api/support/admin/users', async (req, res) => {
+  const agent = await requireSupportAgent(req, res);
+  if (!agent) return;
+
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 500, 1000));
+    const { data, error } = await dbFrom('forexanalyzer_client_overview')
+      .select('user_id,email,full_name,nickname,plan_mode,license_status,trial_started_at,trial_ends_at,grace_ends_at,paid_until,account_id,connection_method,broker,account_role,balance,equity,open_trades,closed_trades,ea_status,last_seen_at,snapshot_updated_at')
+      .order('snapshot_updated_at', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+
+    res.json({
+      users: data || [],
+      agent: {
+        userId: agent.user_id,
+        role: agent.role,
+        displayName: agent.display_name || req.user.name,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Could not load customer overview' });
+  }
+});
+
+app.get('/api/support/admin/feedback', async (req, res) => {
+  const agent = await requireSupportAgent(req, res);
+  if (!agent) return;
+
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit) || 200, 500));
+    const { data, error } = await dbFrom(FEEDBACK_TABLE)
+      .select('id,user_id,email,session_id,page_path,score,responses,user_agent,created_at')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+
+    const profiles = await loadSupportProfiles((data || []).map(row => row.user_id).filter(Boolean));
+    res.json({
+      feedback: (data || []).map(row => ({
+        id: row.id,
+        userId: row.user_id,
+        email: row.email || profiles.get(row.user_id)?.email || '',
+        name: profiles.get(row.user_id)?.full_name || profiles.get(row.user_id)?.nickname || '',
+        sessionId: row.session_id,
+        pagePath: row.page_path,
+        score: row.score,
+        responses: row.responses || {},
+        userAgent: row.user_agent,
+        createdAt: row.created_at,
+      })),
+      agent: {
+        userId: agent.user_id,
+        role: agent.role,
+        displayName: agent.display_name || req.user.name,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Could not load feedback responses' });
   }
 });
 

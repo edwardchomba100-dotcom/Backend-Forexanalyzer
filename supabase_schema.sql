@@ -160,6 +160,48 @@ create index if not exists tradevault_share_links_user_id_idx
 create index if not exists tradevault_share_links_account_id_idx
   on public.tradevault_share_links (account_id);
 
+create table if not exists public.tradevault_referral_codes (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  code text not null unique,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists tradevault_referral_codes_code_idx
+  on public.tradevault_referral_codes (code);
+
+create table if not exists public.tradevault_referrals (
+  id uuid primary key default gen_random_uuid(),
+  referrer_user_id uuid not null references auth.users(id) on delete cascade,
+  referred_user_id uuid not null references auth.users(id) on delete cascade,
+  referral_code text not null,
+  awarded_days integer not null default 7,
+  awarded_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  unique (referred_user_id)
+);
+
+create index if not exists tradevault_referrals_referrer_idx
+  on public.tradevault_referrals (referrer_user_id, created_at desc);
+
+create table if not exists public.tradevault_feedback_responses (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete set null,
+  email text,
+  device_id_hash text,
+  session_id text,
+  page_path text,
+  score integer,
+  responses jsonb not null default '{}'::jsonb,
+  user_agent text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists tradevault_feedback_responses_created_idx
+  on public.tradevault_feedback_responses (created_at desc);
+
+create index if not exists tradevault_feedback_responses_user_idx
+  on public.tradevault_feedback_responses (user_id, created_at desc);
+
 create table if not exists public.tradevault_support_agents (
   user_id uuid primary key references auth.users(id) on delete cascade,
   role text not null default 'agent',
@@ -231,9 +273,54 @@ alter table public.tradevault_account_deletions enable row level security;
 alter table public.tradevault_user_ea_keys enable row level security;
 alter table public.tradevault_direct_mt_accounts enable row level security;
 alter table public.tradevault_share_links enable row level security;
+alter table public.tradevault_referral_codes enable row level security;
+alter table public.tradevault_referrals enable row level security;
+alter table public.tradevault_feedback_responses enable row level security;
 alter table public.tradevault_support_agents enable row level security;
 alter table public.tradevault_support_tickets enable row level security;
 alter table public.tradevault_support_messages enable row level security;
+
+drop policy if exists referral_codes_select_own on public.tradevault_referral_codes;
+create policy referral_codes_select_own
+  on public.tradevault_referral_codes
+  for select
+  using (auth.uid() = user_id);
+
+drop policy if exists referral_codes_insert_own on public.tradevault_referral_codes;
+create policy referral_codes_insert_own
+  on public.tradevault_referral_codes
+  for insert
+  with check (auth.uid() = user_id);
+
+drop policy if exists referrals_select_own_or_agent on public.tradevault_referrals;
+create policy referrals_select_own_or_agent
+  on public.tradevault_referrals
+  for select
+  using (
+    auth.uid() = referrer_user_id
+    or auth.uid() = referred_user_id
+    or exists (
+      select 1 from public.tradevault_support_agents a
+      where a.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists feedback_insert_self_or_guest on public.tradevault_feedback_responses;
+create policy feedback_insert_self_or_guest
+  on public.tradevault_feedback_responses
+  for insert
+  with check (user_id is null or auth.uid() = user_id);
+
+drop policy if exists feedback_select_agent on public.tradevault_feedback_responses;
+create policy feedback_select_agent
+  on public.tradevault_feedback_responses
+  for select
+  using (
+    exists (
+      select 1 from public.tradevault_support_agents a
+      where a.user_id = auth.uid()
+    )
+  );
 
 drop policy if exists support_agents_select_own on public.tradevault_support_agents;
 create policy support_agents_select_own
