@@ -82,6 +82,28 @@ create index if not exists tradevault_user_trials_device_id_hash_idx
 create index if not exists tradevault_user_trials_plan_idx
   on public.tradevault_user_trials (plan_mode, grace_ends_at);
 
+create table if not exists public.tradevault_trial_identity_claims (
+  claim_type text not null,
+  claim_hash text not null,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  first_seen_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now(),
+  metadata jsonb not null default '{}'::jsonb,
+  primary key (claim_type, claim_hash)
+);
+
+alter table public.tradevault_trial_identity_claims
+  add column if not exists user_id uuid references auth.users(id) on delete cascade,
+  add column if not exists first_seen_at timestamptz not null default now(),
+  add column if not exists last_seen_at timestamptz not null default now(),
+  add column if not exists metadata jsonb not null default '{}'::jsonb;
+
+create index if not exists tradevault_trial_identity_claims_user_idx
+  on public.tradevault_trial_identity_claims (user_id, last_seen_at desc);
+
+create index if not exists tradevault_trial_identity_claims_type_user_idx
+  on public.tradevault_trial_identity_claims (claim_type, user_id);
+
 create table if not exists public.tradevault_account_owners (
   account_id text primary key,
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -268,6 +290,7 @@ alter table public.tradevault_account_alerts enable row level security;
 alter table public.tradevault_account_snapshots enable row level security;
 alter table public.tradevault_user_profiles enable row level security;
 alter table public.tradevault_user_trials enable row level security;
+alter table public.tradevault_trial_identity_claims enable row level security;
 alter table public.tradevault_account_owners enable row level security;
 alter table public.tradevault_account_deletions enable row level security;
 alter table public.tradevault_user_ea_keys enable row level security;
@@ -279,6 +302,18 @@ alter table public.tradevault_feedback_responses enable row level security;
 alter table public.tradevault_support_agents enable row level security;
 alter table public.tradevault_support_tickets enable row level security;
 alter table public.tradevault_support_messages enable row level security;
+
+drop policy if exists trial_identity_claims_select_own_or_agent on public.tradevault_trial_identity_claims;
+create policy trial_identity_claims_select_own_or_agent
+  on public.tradevault_trial_identity_claims
+  for select
+  using (
+    auth.uid() = user_id
+    or exists (
+      select 1 from public.tradevault_support_agents a
+      where a.user_id = auth.uid()
+    )
+  );
 
 drop policy if exists referral_codes_select_own on public.tradevault_referral_codes;
 create policy referral_codes_select_own

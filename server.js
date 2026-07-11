@@ -556,6 +556,7 @@ const requireUser = async (req, res, next) => {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const TRIAL_LICENSE_TABLE = 'tradevault_user_trials';
+const TRIAL_IDENTITY_CLAIMS_TABLE = 'tradevault_trial_identity_claims';
 const TRIAL_LICENSE_COLUMNS = [
   'user_id',
   'email',
@@ -672,6 +673,248 @@ const firstValue = (...values) => {
   return '';
 };
 
+const cleanIdentityText = (value, maxLength = 160) =>
+  String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength);
+
+const normalizeIdentityPart = (value) =>
+  cleanIdentityText(value, 220).toLowerCase();
+
+const compactMetadata = (metadata = {}) => {
+  const out = {};
+  for (const [key, value] of Object.entries(metadata || {})) {
+    if (value === undefined || value === null || value === '') continue;
+    out[key] = typeof value === 'string' ? cleanIdentityText(value, 300) : value;
+  }
+  return out;
+};
+
+const getHeaderValue = (req, name) => {
+  const raw = req.headers[String(name).toLowerCase()];
+  return Array.isArray(raw) ? raw[0] : String(raw || '');
+};
+
+const getClientIp = (req) => {
+  const forwarded = firstValue(
+    req.headers['cf-connecting-ip'],
+    req.headers['x-real-ip'],
+    req.headers['x-client-ip'],
+    req.headers['x-forwarded-for'],
+    req.socket?.remoteAddress,
+  );
+  const value = String(forwarded || '').split(',')[0].trim();
+  return value.replace(/^::ffff:/, '').slice(0, 80);
+};
+
+const getRequestUserAgent = (req) =>
+  cleanIdentityText(req.headers['user-agent'], 500);
+
+const getTrialBrowserFingerprintHash = (req) => {
+  const raw = firstValue(
+    getHeaderValue(req, 'x-fap-device-fingerprint'),
+    getHeaderValue(req, 'x-trial-device-fingerprint'),
+  ).slice(0, 4000);
+  return raw ? hashSecret(`forexanalyzer-pro-browser:${raw}`) : null;
+};
+
+const getTrialRequestIdentity = (req) => {
+  const deviceHash = getTrialDeviceHash(req);
+  const browserFingerprintHash = getTrialBrowserFingerprintHash(req);
+  const ip = getClientIp(req);
+  const userAgent = getRequestUserAgent(req);
+  const ipHash = ip ? hashSecret(`forexanalyzer-pro-ip:${ip}`) : null;
+  const userAgentHash = userAgent ? hashSecret(`forexanalyzer-pro-user-agent:${userAgent}`) : null;
+  const ipUserAgentHash = ipHash && userAgentHash
+    ? hashSecret(`forexanalyzer-pro-ipua:${ipHash}:${userAgentHash}`)
+    : null;
+
+  return {
+    deviceHash,
+    browserFingerprintHash,
+    ipHash,
+    userAgentHash,
+    ipUserAgentHash,
+    metadata: compactMetadata({
+      userAgent,
+      ipHash,
+      userAgentHash,
+      ipUserAgentHash,
+      source: 'web',
+    }),
+  };
+};
+
+const isMissingTrialIdentityTable = (error) =>
+  error?.code === '42P01' || /tradevault_trial_identity_claims/i.test(error?.message || '');
+
+const recordTrialIdentityClaim = async (user, claimType, claimHash, metadata = {}, options = {}) => {
+  if (!supabase || !user?.id || !claimType || !claimHash) return { ok: true };
+
+  const blocking = options.blocking !== false;
+  const nowIso = new Date().toISOString();
+  const cleanType = cleanIdentityText(claimType, 64).toLowerCase().replace(/[^a-z0-9_:-]/g, '_');
+  const cleanHash = cleanIdentityText(claimHash, 128);
+  const cleanMeta = compactMetadata(metadata);
+
+  const existing = await dbFrom(TRIAL_IDENTITY_CLAIMS_TABLE)
+    .select('claim_type,claim_hash,user_id,metadata')
+    .eq('claim_type', cleanType)
+    .eq('claim_hash', cleanHash)
+    .maybeSingle();
+
+  if (existing.error) {
+    if (isMissingTrialIdentityTable(existing.error)) {
+      console.warn('[License] trial identity claim table is not installed yet. Run the latest supabase_schema.sql migration.');
+      return { ok: true, migrationRequired: true };
+    }
+    logDbError(`load trial identity claim:${cleanType}`, existing.error);
+    return { ok: true, error: existing.error };
+  }
+
+  if (existing.data?.user_id && existing.data.user_id !== user.id) {
+    if (!blocking) return { ok: true, conflict: existing.data, blocked: false };
+    return {
+      ok: false,
+      blocked: true,
+      claimType: cleanType,
+      conflict: existing.data,
+      message: 'This device or MetaTrader account has already started a ForexAnalyzer Pro free trial under another login.',
+    };
+  }
+
+  if (existing.data?.user_id === user.id) {
+    const { error } = await dbFrom(TRIAL_IDENTITY_CLAIMS_TABLE)
+      .update({
+        last_seen_at: nowIso,
+        metadata: {
+          ...(existing.data.metadata || {}),
+          ...cleanMeta,
+        },
+      })
+      .eq('claim_type', cleanType)
+      .eq('claim_hash', cleanHash);
+    if (error && !isMissingTrialIdentityTable(error)) logDbError(`update trial identity claim:${cleanType}`, error);
+    return { ok: true };
+  }
+
+  const inserted = await dbFrom(TRIAL_IDENTITY_CLAIMS_TABLE).insert({
+    claim_type: cleanType,
+    claim_hash: cleanHash,
+    user_id: user.id,
+    first_seen_at: nowIso,
+    last_seen_at: nowIso,
+    metadata: cleanMeta,
+  });
+
+  if (inserted.error) {
+    if (inserted.error.code === '23505') {
+      return recordTrialIdentityClaim(user, cleanType, cleanHash, cleanMeta, options);
+    }
+    if (!isMissingTrialIdentityTable(inserted.error)) logDbError(`insert trial identity claim:${cleanType}`, inserted.error);
+    return { ok: true, error: inserted.error };
+  }
+
+  return { ok: true };
+};
+
+const recordTrialRequestIdentityClaims = async (user, identity = {}) => {
+  const claims = [
+    ['local_device', identity.deviceHash, { ...(identity.metadata || {}), source: 'web_local_device' }, true],
+    ['browser_fingerprint', identity.browserFingerprintHash, { ...(identity.metadata || {}), source: 'web_fingerprint' }, true],
+    ['ip_user_agent', identity.ipUserAgentHash, { ...(identity.metadata || {}), source: 'web_soft_signal' }, false],
+  ];
+
+  for (const [type, hash, metadata, blocking] of claims) {
+    if (!hash) continue;
+    const result = await recordTrialIdentityClaim(user, type, hash, metadata, { blocking });
+    if (result.blocked) return result;
+  }
+
+  return { ok: true };
+};
+
+const buildMtAccountIdentityClaim = (accountId, payload = {}, state = null, extra = {}) => {
+  const body = payload && typeof payload === 'object' ? payload : {};
+  const account = body.account && typeof body.account === 'object' ? body.account : {};
+  const meta = body.meta && typeof body.meta === 'object' ? body.meta : {};
+
+  const login = cleanIdentityText(firstValue(
+    extra.login,
+    account.login,
+    account.account_login,
+    account.accountId,
+    account.account_id,
+    meta.login,
+    accountId,
+    state?.config?.login,
+  ), 80);
+  const serverName = cleanIdentityText(firstValue(
+    extra.server,
+    account.server,
+    meta.server,
+    state?.config?.server,
+  ), 180);
+  const broker = cleanIdentityText(firstValue(
+    extra.broker,
+    account.broker,
+    account.company,
+    meta.broker,
+    meta.company,
+    state?.config?.broker,
+  ), 180);
+  const platform = cleanIdentityText(firstValue(extra.platform, meta.platform, state?.config?.platform, 'mt5'), 20).toLowerCase();
+
+  if (!login) return null;
+
+  const strongIdentity = serverName || broker;
+  const identitySource = strongIdentity
+    ? `${platform}|${normalizeIdentityPart(login)}|${normalizeIdentityPart(serverName)}|${normalizeIdentityPart(broker)}`
+    : `${platform}|${normalizeIdentityPart(login)}`;
+
+  return {
+    hash: hashSecret(`forexanalyzer-pro-mt-account:${identitySource}`),
+    strongIdentity: !!strongIdentity,
+    metadata: compactMetadata({
+      source: extra.source || state?.config?.source || 'ea',
+      platform,
+      login,
+      server: serverName,
+      broker,
+      accountId,
+      strongIdentity: !!strongIdentity,
+    }),
+  };
+};
+
+const claimMtAccountForUser = async (user, accountId, payload = {}, state = null, extra = {}) => {
+  const claim = buildMtAccountIdentityClaim(accountId, payload, state, extra);
+  if (!claim) return { ok: true };
+  if (extra.requireStrongIdentity && !claim.strongIdentity) return { ok: true };
+  return recordTrialIdentityClaim(user, 'mt_account', claim.hash, claim.metadata, { blocking: true });
+};
+
+const ensureEaCanClaimMtAccount = async (req, res, accountId, payload = {}, state = null) => {
+  if (!req.eaUserId) return true;
+  const result = await claimMtAccountForUser(
+    { id: req.eaUserId, email: '' },
+    accountId,
+    payload,
+    state,
+    { source: 'ea', requireStrongIdentity: true },
+  );
+  if (!result.blocked) return true;
+  if (getAccountOwner(accountId) === req.eaUserId) {
+    await clearAccountOwner(accountId).catch(err => logDbError(`clear blocked account owner:${accountId}`, err));
+  }
+  res.status(403).json({
+    error: result.message,
+    claimType: result.claimType,
+  });
+  return false;
+};
+
 const readEaProductProof = (req) => {
   const body = req.body && typeof req.body === 'object' ? req.body : {};
   const meta = body.meta && typeof body.meta === 'object' ? body.meta : {};
@@ -741,9 +984,17 @@ const markUserPaidFromEa = async (userId, proof = {}) => {
   return true;
 };
 
-const ensureUserLicense = async (user, deviceHash = null) => {
+const ensureUserLicense = async (user, deviceHash = null, identity = {}) => {
   if (!supabase || !user?.id) return null;
-  const cacheKey = `${user.id}:${deviceHash || 'no-device'}`;
+  const requestIdentity = {
+    ...identity,
+    deviceHash: deviceHash || identity.deviceHash || null,
+  };
+  const cacheKey = [
+    user.id,
+    requestIdentity.deviceHash || 'no-device',
+    requestIdentity.browserFingerprintHash || 'no-browser',
+  ].join(':');
   const cached = g_userLicenseCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.license;
 
@@ -768,7 +1019,7 @@ const ensureUserLicense = async (user, deviceHash = null) => {
   if (existing.data) {
     row = existing.data;
   } else {
-    const fresh = createDefaultTrialRow(user, Date.now(), deviceHash);
+    const fresh = createDefaultTrialRow(user, Date.now(), requestIdentity.deviceHash);
     const inserted = await dbFrom(TRIAL_LICENSE_TABLE)
       .insert(fresh)
       .select(TRIAL_LICENSE_COLUMNS)
@@ -782,8 +1033,8 @@ const ensureUserLicense = async (user, deviceHash = null) => {
 
   const update = { updated_at: new Date().toISOString() };
   if (user.email && row.email !== user.email) update.email = user.email;
-  if (deviceHash && !row.device_id_hash) {
-    update.device_id_hash = deviceHash;
+  if (requestIdentity.deviceHash && !row.device_id_hash) {
+    update.device_id_hash = requestIdentity.deviceHash;
     update.device_first_seen_at = new Date().toISOString();
   }
 
@@ -799,26 +1050,36 @@ const ensureUserLicense = async (user, deviceHash = null) => {
   }
 
   let deviceBlocked = false;
-  if (deviceHash) {
+  let blockMessage = null;
+  if (requestIdentity.deviceHash) {
     const matches = await dbFrom(TRIAL_LICENSE_TABLE)
       .select('user_id,email')
-      .eq('device_id_hash', deviceHash)
+      .eq('device_id_hash', requestIdentity.deviceHash)
       .limit(10);
     if (matches.error) {
       logDbError('check trial device', matches.error);
     } else {
       deviceBlocked = (matches.data || []).some((match) => match.user_id && match.user_id !== user.id);
+      if (deviceBlocked) {
+        blockMessage = 'This browser is already linked to a different ForexAnalyzer Pro trial account.';
+      }
     }
   }
 
-  const license = serializeTrialLicense(row, { deviceBlocked });
+  const identityResult = await recordTrialRequestIdentityClaims(user, requestIdentity);
+  if (identityResult.blocked) {
+    deviceBlocked = true;
+    blockMessage = identityResult.message;
+  }
+
+  const license = serializeTrialLicense(row, { deviceBlocked, message: blockMessage });
   g_userLicenseCache.set(cacheKey, { license, expiresAt: Date.now() + 60 * 1000 });
   return license;
 };
 
 const attachTrialLicense = async (req, res, next) => {
-  const deviceHash = getTrialDeviceHash(req);
-  const license = await ensureUserLicense(req.user, deviceHash);
+  const identity = getTrialRequestIdentity(req);
+  const license = await ensureUserLicense(req.user, identity.deviceHash, identity);
   if (!license) return res.status(500).json({ error: 'Could not load license status' });
   req.license = license;
   next();
@@ -839,7 +1100,7 @@ const enforceTrialAccess = (req, res, next) => {
   const status = req.license.deviceBlocked ? 403 : 402;
   return res.status(status).json({
     error: req.license.deviceBlocked
-      ? 'This browser is already linked to a different ForexAnalyzer Pro trial account.'
+      ? 'This device or MetaTrader account is already linked to a different ForexAnalyzer Pro trial account.'
       : 'Your free trial has ended. Upgrade on MQL5 to unlock this feature.',
     license: req.license,
   });
@@ -2331,6 +2592,7 @@ eaRouter.post('/live', async (req, res) => {
   if (!g_accounts.has(accountId)) registerAccount(accountId, { role: 'STANDALONE' });
 
   const state = g_accounts.get(accountId);
+  if (!(await ensureEaCanClaimMtAccount(req, res, accountId, req.body, state))) return;
   markEaOnline(state);
   state.rawLiveData = req.body;
   state.pushCounts.live++;
@@ -2370,6 +2632,7 @@ eaRouter.post('/static', async (req, res) => {
   if (!g_accounts.has(accountId)) registerAccount(accountId, { role: 'STANDALONE' });
 
   const state = g_accounts.get(accountId);
+  if (!(await ensureEaCanClaimMtAccount(req, res, accountId, req.body, state))) return;
   markEaOnline(state);
   state.rawStaticData = req.body;
   state.pushCounts.static++;
@@ -3934,6 +4197,23 @@ app.post('/api/direct-accounts/connect', async (req, res) => {
   const owner = getAccountOwner(accountId);
   if (owner && owner !== req.user.id) {
     return res.status(409).json({ error: `Account ${login} on ${serverName} is already linked to another user` });
+  }
+
+  const mtClaim = await claimMtAccountForUser(
+    req.user,
+    accountId,
+    {
+      account: { login, broker: serverName, server: serverName },
+      meta: { platform, broker: serverName, server: serverName },
+    },
+    null,
+    { source: 'metaapi', platform, login, server: serverName, broker: serverName },
+  );
+  if (mtClaim.blocked) {
+    return res.status(403).json({
+      error: mtClaim.message,
+      claimType: mtClaim.claimType,
+    });
   }
 
   try {
