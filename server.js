@@ -1987,6 +1987,9 @@ const cleanReferralCode = (value) =>
 const makeReferralCode = (userId) =>
   `FAP-${publicHash(`${userId}:${crypto.randomBytes(12).toString('hex')}`, 10).toUpperCase()}`;
 
+const buildReferralLink = (code) =>
+  `${CONFIG.FRONTEND_URL}/dashboard?ref=${encodeURIComponent(code)}`;
+
 const serializeReferralRow = (row, profile = null) => ({
   id: row.id,
   referrerUserId: row.referrer_user_id,
@@ -3688,7 +3691,7 @@ app.get('/api/auth/me', async (req, res) => {
     } : null,
     referral: referralCodeRow ? {
       code: referralCodeRow.code,
-      link: `${CONFIG.FRONTEND_URL}/?ref=${encodeURIComponent(referralCodeRow.code)}`,
+      link: buildReferralLink(referralCodeRow.code),
       bonusDays: CONFIG.REFERRAL_BONUS_DAYS,
       accepted: acceptedReferral ? serializeReferralRow(acceptedReferral) : null,
     } : null,
@@ -3710,7 +3713,7 @@ app.get('/api/referrals/me', async (req, res) => {
     const profiles = await loadSupportProfiles(rows.map(row => row.referred_user_id));
     res.json({
       code: codeRow?.code || null,
-      link: codeRow?.code ? `${CONFIG.FRONTEND_URL}/?ref=${encodeURIComponent(codeRow.code)}` : null,
+      link: codeRow?.code ? buildReferralLink(codeRow.code) : null,
       bonusDays: CONFIG.REFERRAL_BONUS_DAYS,
       referrals: rows.map(row => serializeReferralRow(row, profiles.get(row.referred_user_id))),
     });
