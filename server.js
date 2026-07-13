@@ -136,7 +136,7 @@ const makeSupabaseError = (status, payload) => {
   };
 };
 
-const encodeFilterValue = (value) => encodeURIComponent(value === null ? 'null' : String(value));
+const encodeFilterValue = (value) => (value === null ? 'null' : String(value));
 
 class SupabaseRestQuery {
   constructor(client, schema, table) {
