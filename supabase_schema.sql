@@ -489,6 +489,33 @@ select
   o.account_id,
   coalesce(s.config ->> 'connectionMethod', s.config ->> 'source', 'ea') as connection_method,
   s.config ->> 'broker' as broker,
+  coalesce(s.config ->> 'role', s.processed_data #>> '{meta,account_config,role}', 'STANDALONE') as account_role,
+  case
+    when (s.processed_data #>> '{account,balance}') ~ '^-?[0-9]+(\.[0-9]+)?$'
+      then (s.processed_data #>> '{account,balance}')::numeric
+    else null
+  end as balance,
+  case
+    when (s.processed_data #>> '{account,equity}') ~ '^-?[0-9]+(\.[0-9]+)?$'
+      then (s.processed_data #>> '{account,equity}')::numeric
+    else null
+  end as equity,
+  case
+    when jsonb_typeof(s.processed_data -> 'open_positions') = 'array'
+      then jsonb_array_length(s.processed_data -> 'open_positions')
+    else 0
+  end as open_trades,
+  case
+    when jsonb_typeof(s.processed_data -> 'trade_history') = 'array'
+      then jsonb_array_length(s.processed_data -> 'trade_history')
+    else 0
+  end as closed_trades,
+  s.ea_status ->> 'status' as ea_status,
+  case
+    when s.last_seen_ms is not null then to_timestamp(s.last_seen_ms / 1000.0)
+    else null
+  end as last_seen_at,
+  s.updated_at as snapshot_updated_at,
   coalesce(
     s.processed_data #>> '{account,account_type}',
     s.processed_data #>> '{account,type}',
@@ -519,38 +546,11 @@ select
   coalesce(s.processed_data #>> '{account,currency}', s.config ->> 'currency', '') as currency,
   coalesce(s.processed_data #>> '{account,leverage}', s.config ->> 'leverage', '') as leverage,
   coalesce(s.processed_data #>> '{account,server}', s.processed_data #>> '{meta,server}', s.config ->> 'server', '') as server_name,
-  coalesce(s.config ->> 'role', s.processed_data #>> '{meta,account_config,role}', 'STANDALONE') as account_role,
-  case
-    when (s.processed_data #>> '{account,balance}') ~ '^-?[0-9]+(\.[0-9]+)?$'
-      then (s.processed_data #>> '{account,balance}')::numeric
-    else null
-  end as balance,
-  case
-    when (s.processed_data #>> '{account,equity}') ~ '^-?[0-9]+(\.[0-9]+)?$'
-      then (s.processed_data #>> '{account,equity}')::numeric
-    else null
-  end as equity,
   case
     when (s.processed_data #>> '{account,profit}') ~ '^-?[0-9]+(\.[0-9]+)?$'
       then (s.processed_data #>> '{account,profit}')::numeric
     else null
-  end as running_profit,
-  case
-    when jsonb_typeof(s.processed_data -> 'open_positions') = 'array'
-      then jsonb_array_length(s.processed_data -> 'open_positions')
-    else 0
-  end as open_trades,
-  case
-    when jsonb_typeof(s.processed_data -> 'trade_history') = 'array'
-      then jsonb_array_length(s.processed_data -> 'trade_history')
-    else 0
-  end as closed_trades,
-  s.ea_status ->> 'status' as ea_status,
-  case
-    when s.last_seen_ms is not null then to_timestamp(s.last_seen_ms / 1000.0)
-    else null
-  end as last_seen_at,
-  s.updated_at as snapshot_updated_at
+  end as running_profit
 from public.tradevault_user_profiles p
 left join public.tradevault_user_trials t
   on t.user_id = p.user_id
