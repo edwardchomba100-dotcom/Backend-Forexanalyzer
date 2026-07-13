@@ -46,8 +46,13 @@ create table if not exists public.tradevault_user_profiles (
   full_name text,
   avatar_url text,
   nickname text,
+  created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table public.tradevault_user_profiles
+  add column if not exists created_at timestamptz not null default now(),
+  add column if not exists updated_at timestamptz not null default now();
 
 create table if not exists public.tradevault_user_trials (
   user_id uuid primary key references auth.users(id) on delete cascade,
@@ -244,6 +249,76 @@ create index if not exists tradevault_user_activity_events_user_created_idx
 
 create index if not exists tradevault_user_activity_events_page_created_idx
   on public.tradevault_user_activity_events (page_path, created_at desc);
+
+create table if not exists public.tradevault_user_streaks (
+  user_id uuid primary key references auth.users(id) on delete cascade,
+  current_streak integer not null default 0,
+  longest_streak integer not null default 0,
+  last_active_date date,
+  last_seen_at timestamptz,
+  status text not null default 'inactive',
+  monthly_restore_period text,
+  monthly_restore_count integer not null default 0,
+  total_restores_used integer not null default 0,
+  restore_limit integer not null default 3,
+  milestones_sent jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.tradevault_user_streaks
+  add column if not exists current_streak integer not null default 0,
+  add column if not exists longest_streak integer not null default 0,
+  add column if not exists last_active_date date,
+  add column if not exists last_seen_at timestamptz,
+  add column if not exists status text not null default 'inactive',
+  add column if not exists monthly_restore_period text,
+  add column if not exists monthly_restore_count integer not null default 0,
+  add column if not exists total_restores_used integer not null default 0,
+  add column if not exists restore_limit integer not null default 3,
+  add column if not exists milestones_sent jsonb not null default '[]'::jsonb,
+  add column if not exists created_at timestamptz not null default now(),
+  add column if not exists updated_at timestamptz not null default now();
+
+create index if not exists tradevault_user_streaks_last_seen_idx
+  on public.tradevault_user_streaks (last_seen_at desc);
+
+create index if not exists tradevault_user_streaks_last_active_idx
+  on public.tradevault_user_streaks (last_active_date desc);
+
+create table if not exists public.tradevault_streak_events (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references auth.users(id) on delete cascade,
+  event_type text not null,
+  activity_date date,
+  streak_count integer not null default 0,
+  used_restore boolean not null default false,
+  restores_used integer not null default 0,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists tradevault_streak_events_user_created_idx
+  on public.tradevault_streak_events (user_id, created_at desc);
+
+create index if not exists tradevault_streak_events_activity_date_idx
+  on public.tradevault_streak_events (activity_date desc);
+
+create table if not exists public.tradevault_email_logs (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete set null,
+  email text,
+  email_type text not null,
+  dedupe_key text not null unique,
+  metadata jsonb not null default '{}'::jsonb,
+  sent_at timestamptz not null default now()
+);
+
+create index if not exists tradevault_email_logs_user_type_idx
+  on public.tradevault_email_logs (user_id, email_type, sent_at desc);
+
+create index if not exists tradevault_email_logs_type_sent_idx
+  on public.tradevault_email_logs (email_type, sent_at desc);
 
 create table if not exists public.tradevault_support_agents (
   user_id uuid primary key references auth.users(id) on delete cascade,

@@ -373,6 +373,17 @@ const CONFIG = {
   RESEND_API_KEY:            process.env.RESEND_API_KEY || '',
   REFERRAL_BONUS_DAYS:       +(process.env.REFERRAL_BONUS_DAYS || 7),
 
+  STREAK_TIMEZONE:           process.env.STREAK_TIMEZONE || 'Africa/Nairobi',
+  STREAK_BASE_RESTORES:      +(process.env.STREAK_BASE_RESTORES || 3),
+  STREAK_ADVANCED_RESTORES:  +(process.env.STREAK_ADVANCED_RESTORES || 5),
+  STREAK_ADVANCED_DAYS:      +(process.env.STREAK_ADVANCED_DAYS || 30),
+  STREAK_REMINDER_HOUR:      +(process.env.STREAK_REMINDER_HOUR || 20),
+  RETENTION_EMAILS_ENABLED:  process.env.RETENTION_EMAILS_ENABLED !== 'false',
+  RETENTION_JOB_INTERVAL_MS: +(process.env.RETENTION_JOB_INTERVAL_MS || 30 * 60 * 1000),
+  RETENTION_INITIAL_NO_ACCOUNT_BLAST: process.env.RETENTION_INITIAL_NO_ACCOUNT_BLAST !== 'false',
+  NO_ACCOUNT_HELP_HOURS:     +(process.env.NO_ACCOUNT_HELP_HOURS || 3),
+  MISS_YOU_AFTER_DAYS:       +(process.env.MISS_YOU_AFTER_DAYS || 7),
+
   METAAPI_TOKEN:             process.env.METAAPI_TOKEN || '',
   METAAPI_PROVISIONING_URL:  (process.env.METAAPI_PROVISIONING_URL || 'https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai').replace(/\/+$/, ''),
   METAAPI_CLIENT_API_URL:    (process.env.METAAPI_CLIENT_API_URL || 'https://mt-client-api-v1.new-york.agiliumtrade.ai').replace(/\/+$/, ''),
@@ -406,6 +417,7 @@ const g_directAccounts          = new Map();
 const g_directSyncTimers        = new Map();
 const g_directSyncInFlight      = new Set();
 const g_directCreateTransactions= new Map();
+let   g_retentionJobRunning     = false;
 
 const cloneJSON = (value) =>
   value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -557,6 +569,7 @@ const upsertUserProfile = (user) => {
       email: clean.email,
       full_name: clean.name,
       avatar_url: clean.avatar,
+      created_at: existing.data ? undefined : new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }, { onConflict: 'user_id' });
     if (error) throw error;
@@ -1120,6 +1133,7 @@ const isDashboardReadRequest = (req) => {
   if (req.path.startsWith('/referrals')) return true;
   if (req.path.startsWith('/support')) return true;
   if (req.path.startsWith('/activity')) return true;
+  if (req.path.startsWith('/streak')) return true;
   if (req.method !== 'GET') return false;
   if (req.path === '/accounts') return true;
   if (/^\/accounts\/[^/]+\/(dashboard|status|positions|history|analytics)$/.test(req.path)) return true;
@@ -1736,6 +1750,9 @@ const REFERRAL_CODE_TABLE = 'tradevault_referral_codes';
 const REFERRAL_TABLE = 'tradevault_referrals';
 const FEEDBACK_TABLE = 'tradevault_feedback_responses';
 const ACTIVITY_TABLE = 'tradevault_user_activity_events';
+const STREAK_TABLE = 'tradevault_user_streaks';
+const STREAK_EVENT_TABLE = 'tradevault_streak_events';
+const EMAIL_LOG_TABLE = 'tradevault_email_logs';
 
 const SUPPORT_CATEGORIES = new Set([
   'account_connection',
@@ -1774,6 +1791,9 @@ const emailText = (value, maxLength = 1200) => {
   if (text.length <= maxLength) return text;
   return `${text.slice(0, maxLength - 1)}...`;
 };
+
+const isMissingTableError = (error, tableName) =>
+  error?.code === '42P01' || new RegExp(String(tableName || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(error?.message || '');
 
 const supportUrl = (pathName) =>
   `${CONFIG.FRONTEND_URL}${String(pathName || '/support').startsWith('/') ? '' : '/'}${pathName || '/support'}`;
@@ -2254,6 +2274,530 @@ const sendCustomerSupportEmail = async ({ ticket, body }) => {
     ],
     idempotencyKey: `support-customer-reply-${ticket.id}-${Date.now()}`,
   });
+};
+
+const STREAK_MILESTONES = [5, 10, 30, 60, 100, 200, 365];
+
+const getBusinessDateParts = (date = new Date()) => {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: CONFIG.STREAK_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    weekday: 'short',
+    hour: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date).reduce((out, part) => {
+    if (part.type !== 'literal') out[part.type] = part.value;
+    return out;
+  }, {});
+
+  const ymd = `${parts.year}-${parts.month}-${parts.day}`;
+  const weekdayIndex = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[parts.weekday] ?? new Date(`${ymd}T00:00:00Z`).getUTCDay();
+  return {
+    ymd,
+    weekday: parts.weekday,
+    weekdayIndex,
+    hour: Number(parts.hour || 0),
+    monthPeriod: `${parts.year}-${parts.month}`,
+  };
+};
+
+const addDaysYmd = (ymd, delta) => {
+  const [year, month, day] = String(ymd || '').slice(0, 10).split('-').map(Number);
+  const date = new Date(Date.UTC(year || 1970, (month || 1) - 1, day || 1));
+  date.setUTCDate(date.getUTCDate() + delta);
+  return date.toISOString().slice(0, 10);
+};
+
+const isMarketDateYmd = (ymd) => {
+  const day = new Date(`${String(ymd || '').slice(0, 10)}T00:00:00Z`).getUTCDay();
+  return day !== 0 && day !== 6;
+};
+
+const countMissedMarketDays = (lastActiveDate, todayYmd) => {
+  const last = String(lastActiveDate || '').slice(0, 10);
+  const today = String(todayYmd || '').slice(0, 10);
+  if (!last || !today || last >= today) return 0;
+
+  let count = 0;
+  let cursor = addDaysYmd(last, 1);
+  while (cursor < today) {
+    if (isMarketDateYmd(cursor)) count++;
+    cursor = addDaysYmd(cursor, 1);
+  }
+  return count;
+};
+
+const getRestoreLimitForStreak = (currentStreak = 0, longestStreak = 0) =>
+  Math.max(currentStreak, longestStreak) >= CONFIG.STREAK_ADVANCED_DAYS
+    ? CONFIG.STREAK_ADVANCED_RESTORES
+    : CONFIG.STREAK_BASE_RESTORES;
+
+const normalizeMilestones = (value) => {
+  if (Array.isArray(value)) return value.map(Number).filter(Number.isFinite);
+  if (typeof value === 'string') {
+    try { return normalizeMilestones(JSON.parse(value)); } catch { return []; }
+  }
+  return [];
+};
+
+const serializeStreak = (row = {}, extra = {}) => {
+  const parts = getBusinessDateParts();
+  const lastActiveDate = String(row.last_active_date || '').slice(0, 10) || null;
+  const currentStreak = Number(row.current_streak || 0);
+  const longestStreak = Number(row.longest_streak || 0);
+  const restoreLimit = Number(row.restore_limit || getRestoreLimitForStreak(currentStreak, longestStreak));
+  const restoresUsedThisMonth = Number(row.monthly_restore_count || 0);
+  const marketDay = isMarketDateYmd(parts.ymd);
+  const active = marketDay && lastActiveDate === parts.ymd;
+  const nextMilestone = STREAK_MILESTONES.find(milestone => currentStreak < milestone) || null;
+
+  return {
+    currentStreak,
+    longestStreak,
+    active,
+    fireState: active ? 'burning' : 'dull',
+    status: row.status || (active ? 'active' : 'inactive'),
+    today: parts.ymd,
+    timezone: CONFIG.STREAK_TIMEZONE,
+    marketDay,
+    marketPaused: !marketDay,
+    lastActiveDate,
+    lastSeenAt: row.last_seen_at || null,
+    restoreLimit,
+    restoresUsedThisMonth,
+    restoresRemaining: Math.max(0, restoreLimit - restoresUsedThisMonth),
+    totalRestoresUsed: Number(row.total_restores_used || 0),
+    monthlyRestorePeriod: row.monthly_restore_period || parts.monthPeriod,
+    nextMilestone,
+    milestonesSent: normalizeMilestones(row.milestones_sent),
+    consistencyLabel: row.status === 'lost' ? 'inconsistent' : currentStreak > 0 ? 'consistent' : 'not_started',
+    ...extra,
+  };
+};
+
+const loadStreakRow = async (userId) => {
+  const { data, error } = await dbFrom(STREAK_TABLE)
+    .select('user_id,current_streak,longest_streak,last_active_date,last_seen_at,status,monthly_restore_period,monthly_restore_count,total_restores_used,restore_limit,milestones_sent,created_at,updated_at')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+};
+
+const recordStreakEvent = async ({ userId, eventType, activityDate, streakCount, usedRestore = false, restoresUsed = 0, metadata = {} }) => {
+  const { error } = await dbFrom(STREAK_EVENT_TABLE).insert({
+    user_id: userId,
+    event_type: eventType,
+    activity_date: activityDate || null,
+    streak_count: streakCount || 0,
+    used_restore: !!usedRestore,
+    restores_used: restoresUsed || 0,
+    metadata,
+    created_at: new Date().toISOString(),
+  });
+  if (error && !isMissingTableError(error, STREAK_EVENT_TABLE)) throw error;
+};
+
+const recordStreakCheckIn = async (user, metadata = {}) => {
+  if (!supabase || !user?.id) return { streak: serializeStreak(), databaseDisabled: true };
+
+  const parts = getBusinessDateParts();
+  const nowIso = new Date().toISOString();
+  const existing = await loadStreakRow(user.id);
+  const row = existing || {
+    user_id: user.id,
+    current_streak: 0,
+    longest_streak: 0,
+    last_active_date: null,
+    monthly_restore_period: parts.monthPeriod,
+    monthly_restore_count: 0,
+    total_restores_used: 0,
+    milestones_sent: [],
+  };
+
+  let currentStreak = Number(row.current_streak || 0);
+  let longestStreak = Number(row.longest_streak || 0);
+  let monthlyRestorePeriod = row.monthly_restore_period || parts.monthPeriod;
+  let monthlyRestoreCount = Number(row.monthly_restore_count || 0);
+  let totalRestoresUsed = Number(row.total_restores_used || 0);
+  let milestonesSent = normalizeMilestones(row.milestones_sent);
+  let lastActiveDate = String(row.last_active_date || '').slice(0, 10) || null;
+  let status = row.status || 'inactive';
+  let restored = false;
+  let lost = false;
+  let restoresUsed = 0;
+  let milestoneAchieved = null;
+
+  if (monthlyRestorePeriod !== parts.monthPeriod) {
+    monthlyRestorePeriod = parts.monthPeriod;
+    monthlyRestoreCount = 0;
+  }
+
+  let restoreLimit = getRestoreLimitForStreak(currentStreak, longestStreak);
+
+  if (!isMarketDateYmd(parts.ymd)) {
+    status = currentStreak > 0 ? 'weekend_pause' : 'inactive';
+  } else if (lastActiveDate === parts.ymd) {
+    status = 'active';
+  } else {
+    const previousStreak = currentStreak;
+    const missedMarketDays = lastActiveDate ? countMissedMarketDays(lastActiveDate, parts.ymd) : 0;
+
+    if (!lastActiveDate || currentStreak <= 0) {
+      currentStreak = 1;
+      status = 'active';
+    } else if (missedMarketDays === 0) {
+      currentStreak += 1;
+      status = 'active';
+    } else if (monthlyRestoreCount + missedMarketDays <= restoreLimit) {
+      restored = true;
+      restoresUsed = missedMarketDays;
+      monthlyRestoreCount += missedMarketDays;
+      totalRestoresUsed += missedMarketDays;
+      currentStreak += 1;
+      status = 'restored';
+    } else {
+      lost = true;
+      currentStreak = 1;
+      status = 'lost';
+    }
+
+    lastActiveDate = parts.ymd;
+    longestStreak = Math.max(longestStreak, currentStreak);
+    restoreLimit = getRestoreLimitForStreak(currentStreak, longestStreak);
+
+    const milestone = STREAK_MILESTONES.find(value => currentStreak >= value && previousStreak < value && !milestonesSent.includes(value));
+    if (milestone) {
+      milestonesSent = [...milestonesSent, milestone];
+      milestoneAchieved = {
+        days: milestone,
+        title: `${milestone} day trading streak`,
+        message: `Congratulations. You have opened ForexAnalyzer Pro for ${milestone} trading days and kept your trading routine alive.`,
+      };
+    }
+  }
+
+  const payload = {
+    user_id: user.id,
+    current_streak: currentStreak,
+    longest_streak: longestStreak,
+    last_active_date: lastActiveDate,
+    last_seen_at: nowIso,
+    status,
+    monthly_restore_period: monthlyRestorePeriod,
+    monthly_restore_count: monthlyRestoreCount,
+    total_restores_used: totalRestoresUsed,
+    restore_limit: restoreLimit,
+    milestones_sent: milestonesSent,
+    created_at: existing?.created_at || nowIso,
+    updated_at: nowIso,
+  };
+
+  const { data, error } = await dbFrom(STREAK_TABLE)
+    .upsert(payload, { onConflict: 'user_id' })
+    .select('user_id,current_streak,longest_streak,last_active_date,last_seen_at,status,monthly_restore_period,monthly_restore_count,total_restores_used,restore_limit,milestones_sent,created_at,updated_at')
+    .maybeSingle();
+  if (error) throw error;
+
+  await recordStreakEvent({
+    userId: user.id,
+    eventType: !isMarketDateYmd(parts.ymd) ? 'weekend_visit' : lost ? 'streak_lost' : restored ? 'streak_restored' : 'check_in',
+    activityDate: parts.ymd,
+    streakCount: currentStreak,
+    usedRestore: restored,
+    restoresUsed,
+    metadata,
+  }).catch(err => logDbError(`streak event:${user.id}`, err));
+
+  return {
+    streak: serializeStreak(data || payload, {
+      restored,
+      lost,
+      restoresUsed,
+      milestoneAchieved,
+    }),
+  };
+};
+
+const hasEmailLog = async (dedupeKey) => {
+  const { data, error } = await dbFrom(EMAIL_LOG_TABLE)
+    .select('id')
+    .eq('dedupe_key', dedupeKey)
+    .maybeSingle();
+  if (error) {
+    if (isMissingTableError(error, EMAIL_LOG_TABLE)) return true;
+    throw error;
+  }
+  return !!data;
+};
+
+const getLatestEmailLog = async (userId, emailType) => {
+  const { data, error } = await dbFrom(EMAIL_LOG_TABLE)
+    .select('id,sent_at')
+    .eq('user_id', userId)
+    .eq('email_type', emailType)
+    .order('sent_at', { ascending: false })
+    .limit(1);
+  if (error) {
+    if (isMissingTableError(error, EMAIL_LOG_TABLE)) return null;
+    throw error;
+  }
+  return data?.[0] || null;
+};
+
+const markEmailSent = async ({ userId, email, emailType, dedupeKey, metadata = {} }) => {
+  const { error } = await dbFrom(EMAIL_LOG_TABLE).insert({
+    user_id: userId || null,
+    email: email || null,
+    email_type: emailType,
+    dedupe_key: dedupeKey,
+    metadata,
+    sent_at: new Date().toISOString(),
+  });
+  if (error && !isMissingTableError(error, EMAIL_LOG_TABLE) && error.code !== '23505') throw error;
+};
+
+const sendDedupeEmail = async ({ userId, email, emailType, dedupeKey, metadata, build }) => {
+  if (!email || !CONFIG.RETENTION_EMAILS_ENABLED) return false;
+  if (await hasEmailLog(dedupeKey)) return false;
+  await sendResendEmail(build());
+  await markEmailSent({ userId, email, emailType, dedupeKey, metadata });
+  return true;
+};
+
+const sendNoAccountHelpEmail = (profile, reason = 'three_hour_setup_help') =>
+  sendDedupeEmail({
+    userId: profile.user_id,
+    email: profile.email,
+    emailType: 'no_account_help',
+    dedupeKey: `no-account-help:${profile.user_id}`,
+    metadata: { reason },
+    build: () => ({
+      to: profile.email,
+      subject: 'Need help connecting your ForexAnalyzer Pro account?',
+      text: [
+        `Hi ${profile.full_name || profile.nickname || 'Trader'},`,
+        '',
+        'I noticed your ForexAnalyzer Pro login is ready, but no trading account is connected yet.',
+        'If the EA setup, API key, or MetaTrader WebRequest step is confusing, reply or open Support and we will help you one-on-one for free.',
+        '',
+        'Quick setup:',
+        '1. Open ForexAnalyzer Pro and go to Connect Account.',
+        '2. Generate or copy your EA API key.',
+        `3. In MetaTrader, whitelist this WebRequest URL: ${CONFIG.PUBLIC_BASE_URL}`,
+        '4. Attach the EA, paste the key, enable Algo Trading, and click OK.',
+        '',
+        supportUrl('/support'),
+      ].join('\n'),
+      html: supportEmailShell({
+        title: 'Need help connecting your trading account?',
+        intro: 'Your login is active, but we do not see a connected MetaTrader account yet. We can help you get set up one-on-one for free.',
+        rows: [
+          { label: 'WebRequest URL', value: CONFIG.PUBLIC_BASE_URL },
+          { label: 'Support', value: 'Free one-on-one setup help' },
+        ],
+        message: [
+          '1. Open ForexAnalyzer Pro and go to Connect Account.',
+          '2. Generate or copy your EA API key.',
+          `3. In MetaTrader, whitelist this WebRequest URL: ${CONFIG.PUBLIC_BASE_URL}`,
+          '4. Attach the EA to any chart, paste the key, enable Algo Trading, and click OK.',
+          '',
+          'If any step is unclear, open Support and we will guide you until the account is online.',
+        ].join('\n'),
+        ctaLabel: 'Get setup help',
+        ctaUrl: supportUrl('/support'),
+      }),
+      tags: [
+        { name: 'type', value: 'no_account_help' },
+        { name: 'user_id', value: String(profile.user_id || '').replace(/[^a-zA-Z0-9_-]/g, '_') },
+      ],
+      idempotencyKey: `no-account-help-${profile.user_id}`,
+    }),
+  });
+
+const sendStreakReminderEmail = (profile, streak) =>
+  sendDedupeEmail({
+    userId: profile.user_id,
+    email: profile.email,
+    emailType: 'streak_reminder',
+    dedupeKey: `streak-reminder:${profile.user_id}:${getBusinessDateParts().ymd}`,
+    metadata: { currentStreak: streak.current_streak || 0 },
+    build: () => ({
+      to: profile.email,
+      subject: 'Your ForexAnalyzer Pro streak is waiting today',
+      text: [
+        `Hi ${profile.full_name || profile.nickname || 'Trader'},`,
+        '',
+        `Your ${streak.current_streak || 0}-day trading streak has not been activated today.`,
+        'Open ForexAnalyzer Pro before the trading day ends to keep your consistency streak alive.',
+        '',
+        supportUrl('/dashboard'),
+      ].join('\n'),
+      html: supportEmailShell({
+        title: 'Keep your trading streak alive',
+        intro: 'Consistency is one of the biggest edges a trader can build. Your streak is waiting for today.',
+        rows: [
+          { label: 'Current streak', value: `${streak.current_streak || 0} trading days` },
+          { label: 'Restores left', value: `${Math.max(0, (streak.restore_limit || CONFIG.STREAK_BASE_RESTORES) - (streak.monthly_restore_count || 0))} this month` },
+        ],
+        message: 'Open ForexAnalyzer Pro today to activate your streak, review your dashboard, and stay in rhythm with your trading plan.',
+        ctaLabel: 'Activate streak',
+        ctaUrl: supportUrl('/dashboard'),
+      }),
+      tags: [
+        { name: 'type', value: 'streak_reminder' },
+        { name: 'user_id', value: String(profile.user_id || '').replace(/[^a-zA-Z0-9_-]/g, '_') },
+      ],
+      idempotencyKey: `streak-reminder-${profile.user_id}-${getBusinessDateParts().ymd}`,
+    }),
+  });
+
+const sendMissYouEmail = (profile, lastSeenAt) =>
+  sendDedupeEmail({
+    userId: profile.user_id,
+    email: profile.email,
+    emailType: 'miss_you',
+    dedupeKey: `miss-you:${profile.user_id}:${getBusinessDateParts().ymd}`,
+    metadata: { lastSeenAt },
+    build: () => ({
+      to: profile.email,
+      subject: 'We miss you at ForexAnalyzer Pro',
+      text: [
+        `Hi ${profile.full_name || profile.nickname || 'Trader'},`,
+        '',
+        'We have not seen you in ForexAnalyzer Pro for more than a week, so this is a quick trading wellness check.',
+        'Are you facing any issue with your trading, EA connection, account setup, or the system itself?',
+        '',
+        'We are here to support your trading career. Open the dashboard or send us a support message and we will help.',
+        '',
+        supportUrl('/support'),
+      ].join('\n'),
+      html: supportEmailShell({
+        title: 'A quick trading wellness check',
+        intro: 'We have not seen you for more than a week. If trading or the system has been frustrating, we are here to help.',
+        rows: [
+          { label: 'Last seen', value: lastSeenAt ? new Date(lastSeenAt).toLocaleString('en-US', { timeZone: CONFIG.STREAK_TIMEZONE }) : 'More than a week ago' },
+          { label: 'Support', value: 'Ask us anything about setup, EA connection, or your trading workflow' },
+        ],
+        message: 'Open ForexAnalyzer Pro to review your account, or contact support if something is blocking you. We want the platform to support your trading routine, not sit unused when you need help.',
+        ctaLabel: 'Open support',
+        ctaUrl: supportUrl('/support'),
+      }),
+      tags: [
+        { name: 'type', value: 'miss_you' },
+        { name: 'user_id', value: String(profile.user_id || '').replace(/[^a-zA-Z0-9_-]/g, '_') },
+      ],
+      idempotencyKey: `miss-you-${profile.user_id}-${getBusinessDateParts().ymd}`,
+    }),
+  });
+
+const loadRetentionProfiles = async () => {
+  const { data, error } = await dbFrom('tradevault_user_profiles')
+    .select('user_id,email,full_name,nickname,created_at,updated_at')
+    .order('updated_at', { ascending: false })
+    .limit(1000);
+  if (error) throw error;
+  return (data || []).filter(profile => profile.user_id && profile.email);
+};
+
+const getUserConnectedAccountCount = async (userId) => {
+  const memoryCount = [...g_accountOwners.values()].filter(ownerId => ownerId === userId).length;
+  const { data, error } = await dbFrom('tradevault_account_owners')
+    .select('account_id')
+    .eq('user_id', userId)
+    .limit(1);
+  if (error) {
+    if (isMissingTableError(error, 'tradevault_account_owners')) return memoryCount;
+    throw error;
+  }
+  return Math.max(memoryCount, data?.length || 0);
+};
+
+const getUserLastActivityAt = async (userId, fallback = null) => {
+  const { data, error } = await dbFrom(ACTIVITY_TABLE)
+    .select('created_at')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(1);
+  if (error) {
+    if (isMissingTableError(error, ACTIVITY_TABLE)) return fallback;
+    throw error;
+  }
+  return data?.[0]?.created_at || fallback;
+};
+
+const runNoAccountHelpEmails = async ({ initialBlast = false } = {}) => {
+  const profiles = await loadRetentionProfiles();
+  const cutoffMs = Date.now() - CONFIG.NO_ACCOUNT_HELP_HOURS * 60 * 60 * 1000;
+
+  for (const profile of profiles) {
+    const accountCount = await getUserConnectedAccountCount(profile.user_id);
+    if (accountCount > 0) continue;
+    const createdMs = toMs(profile.created_at || profile.updated_at) || 0;
+    if (!initialBlast && createdMs > cutoffMs) continue;
+    await sendNoAccountHelpEmail(profile, initialBlast ? 'initial_zero_account_blast' : 'three_hour_setup_help');
+  }
+};
+
+const runStreakReminderEmails = async () => {
+  const parts = getBusinessDateParts();
+  if (!isMarketDateYmd(parts.ymd) || parts.hour < CONFIG.STREAK_REMINDER_HOUR) return;
+
+  const { data, error } = await dbFrom(STREAK_TABLE)
+    .select('user_id,current_streak,last_active_date,monthly_restore_count,restore_limit,status,last_seen_at')
+    .order('last_seen_at', { ascending: false })
+    .limit(1000);
+  if (error) {
+    if (isMissingTableError(error, STREAK_TABLE)) return;
+    throw error;
+  }
+
+  const profiles = await loadSupportProfiles((data || []).map(row => row.user_id));
+  for (const streak of data || []) {
+    if ((Number(streak.current_streak) || 0) <= 0) continue;
+    if (String(streak.last_active_date || '').slice(0, 10) === parts.ymd) continue;
+    const profile = profiles.get(streak.user_id);
+    if (!profile?.email) continue;
+    await sendStreakReminderEmail({ ...profile, user_id: streak.user_id }, streak);
+  }
+};
+
+const runMissYouEmails = async () => {
+  const profiles = await loadRetentionProfiles();
+  const cutoffMs = Date.now() - CONFIG.MISS_YOU_AFTER_DAYS * DAY_MS;
+
+  for (const profile of profiles) {
+    const lastSeenAt = await getUserLastActivityAt(profile.user_id, profile.updated_at || profile.created_at);
+    const lastSeenMs = toMs(lastSeenAt) || 0;
+    if (lastSeenMs > cutoffMs) continue;
+    const latest = await getLatestEmailLog(profile.user_id, 'miss_you');
+    if (latest?.sent_at && (Date.now() - (toMs(latest.sent_at) || 0)) < CONFIG.MISS_YOU_AFTER_DAYS * DAY_MS) continue;
+    await sendMissYouEmail(profile, lastSeenAt);
+  }
+};
+
+const runRetentionEmailJobs = async (reason = 'interval') => {
+  if (!supabase || !CONFIG.RETENTION_EMAILS_ENABLED || g_retentionJobRunning) return;
+  g_retentionJobRunning = true;
+  try {
+    await runNoAccountHelpEmails({ initialBlast: CONFIG.RETENTION_INITIAL_NO_ACCOUNT_BLAST });
+    await runStreakReminderEmails();
+    await runMissYouEmails();
+  } catch (error) {
+    logDbError(`retention jobs:${reason}`, error);
+  } finally {
+    g_retentionJobRunning = false;
+  }
+};
+
+const startRetentionEmailJobs = () => {
+  if (!supabase || !CONFIG.RETENTION_EMAILS_ENABLED) return;
+  const intervalMs = Math.max(5 * 60 * 1000, CONFIG.RETENTION_JOB_INTERVAL_MS);
+  setTimeout(() => runRetentionEmailJobs('startup'), 90 * 1000);
+  setInterval(() => runRetentionEmailJobs('interval'), intervalMs);
+  console.log(`[Retention] Email jobs enabled. Interval: ${Math.round(intervalMs / 60000)} minute(s).`);
 };
 
 const cleanReferralCode = (value) =>
@@ -3957,6 +4501,43 @@ app.post('/api/activity/page-view', async (req, res) => {
   }
 });
 
+app.get('/api/streak/me', async (req, res) => {
+  if (!supabase) return res.json({ streak: serializeStreak(), databaseDisabled: true });
+
+  try {
+    const row = await loadStreakRow(req.user.id);
+    res.json({ streak: serializeStreak(row || { user_id: req.user.id }) });
+  } catch (error) {
+    if (isMissingTableError(error, STREAK_TABLE)) {
+      return res.json({ streak: serializeStreak(), missingTable: true });
+    }
+    logDbError(`streak me:${req.user.id}`, error);
+    res.status(500).json({ error: error.message || 'Could not load streak' });
+  }
+});
+
+app.post('/api/streak/check-in', async (req, res) => {
+  if (!supabase) return res.json({ streak: serializeStreak(), databaseDisabled: true });
+
+  try {
+    const metadata = req.body?.metadata && typeof req.body.metadata === 'object' && !Array.isArray(req.body.metadata)
+      ? req.body.metadata
+      : {};
+    const result = await recordStreakCheckIn(req.user, {
+      source: cleanSupportText(metadata.source || 'site_open', 80),
+      pagePath: cleanSupportText(metadata.pagePath || metadata.page_path || '', 240),
+      userAgent: cleanSupportText(req.headers['user-agent'], 500),
+    });
+    res.status(201).json(result);
+  } catch (error) {
+    if (isMissingTableError(error, STREAK_TABLE)) {
+      return res.json({ streak: serializeStreak(), missingTable: true });
+    }
+    logDbError(`streak check-in:${req.user.id}`, error);
+    res.status(500).json({ error: error.message || 'Could not update streak' });
+  }
+});
+
 app.get('/api/auth/me', async (req, res) => {
   const keyRows = supabase
     ? await dbFrom('tradevault_user_ea_keys')
@@ -3972,6 +4553,7 @@ app.get('/api/auth/me', async (req, res) => {
   let supportAgent = null;
   let referralCodeRow = null;
   let acceptedReferral = null;
+  let streak = null;
   const pendingReferralCode = firstValue(
     req.headers['x-fap-referral-code'],
     req.query.ref,
@@ -3991,6 +4573,12 @@ app.get('/api/auth/me', async (req, res) => {
     logDbError(`auth referral:${req.user.id}`, error);
   }
 
+  try {
+    streak = serializeStreak(await loadStreakRow(req.user.id) || { user_id: req.user.id });
+  } catch (error) {
+    if (!isMissingTableError(error, STREAK_TABLE)) logDbError(`auth streak:${req.user.id}`, error);
+  }
+
   res.json({
     user: req.user,
     eaKey: keyRows.data?.[0] || null,
@@ -4006,6 +4594,7 @@ app.get('/api/auth/me', async (req, res) => {
       bonusDays: CONFIG.REFERRAL_BONUS_DAYS,
       accepted: acceptedReferral ? serializeReferralRow(acceptedReferral) : null,
     } : null,
+    streak,
   });
 });
 
@@ -5711,6 +6300,7 @@ const startServer = async () => {
   await hydrateDirectAccounts();
   loadAccountRegistry();
   await hydrateAccountSnapshots();
+  startRetentionEmailJobs();
 
   server.listen(CONFIG.PORT, '0.0.0.0', () => {
   console.log('');
