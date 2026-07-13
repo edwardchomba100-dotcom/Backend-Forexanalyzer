@@ -363,6 +363,8 @@ const CONFIG = {
   FREE_EA_URL:               process.env.FREE_EA_URL || 'https://www.mql5.com/en/market/product/111375',
   PAID_EA_URL:               process.env.PAID_EA_URL || 'https://www.mql5.com/en/market/product/182969',
   PAID_EA_BUILD_TOKEN:       process.env.PAID_EA_BUILD_TOKEN || '',
+  FREE_ACCOUNT_LIMIT:         +(process.env.FREE_ACCOUNT_LIMIT || 3),
+  PAID_ACCOUNT_LIMIT:         +(process.env.PAID_ACCOUNT_LIMIT || 5),
 
   FRONTEND_URL:              (process.env.FRONTEND_URL || 'https://forexanalyzerpro.com').replace(/\/+$/, ''),
   SUPPORT_ADMIN_EMAILS:      process.env.SUPPORT_ADMIN_EMAILS || 'ianchomba734@gmail.com',
@@ -673,6 +675,9 @@ const serializeTrialLicense = (row, options = {}) => {
     daysUntilAccessEnds: Math.max(0, Math.ceil((graceEndsMs - now) / DAY_MS)),
     freeEaUrl: CONFIG.FREE_EA_URL,
     paidEaUrl: CONFIG.PAID_EA_URL,
+    accountLimit: paid ? CONFIG.PAID_ACCOUNT_LIMIT : CONFIG.FREE_ACCOUNT_LIMIT,
+    freeAccountLimit: CONFIG.FREE_ACCOUNT_LIMIT,
+    paidAccountLimit: CONFIG.PAID_ACCOUNT_LIMIT,
     migrationRequired: !!options.migrationRequired,
     message: options.message || null,
   };
@@ -1616,6 +1621,7 @@ const setAccountOwner = async (accountId, userId) => {
   }
   if (existing === userId) return userId;
 
+  await ensureUserCanAddAccount(userId, id);
   g_accountOwners.set(id, userId);
 
   if (supabase) {
@@ -1664,6 +1670,30 @@ const getVisibleAccountIds = (userId) =>
     .filter(([, owner]) => owner === userId)
     .map(([accountId]) => accountId));
 
+const countOwnedAccounts = (userId) =>
+  [...g_accountOwners.values()].filter(owner => owner === userId).length;
+
+const accountLimitForLicense = (license) =>
+  license?.paid ? CONFIG.PAID_ACCOUNT_LIMIT : CONFIG.FREE_ACCOUNT_LIMIT;
+
+const ensureUserCanAddAccount = async (userId, accountId) => {
+  if (!userId || !accountId || userOwnsAccount(userId, accountId)) return;
+  const license = await ensureUserLicense({ id: userId, email: '' });
+  const limit = accountLimitForLicense(license);
+  if (!Number.isFinite(limit) || limit <= 0) return;
+
+  const current = countOwnedAccounts(userId);
+  if (current >= limit) {
+    const err = new Error(
+      `Account limit reached. Your ${license?.paid ? 'paid' : 'free'} plan allows ${limit} account${limit === 1 ? '' : 's'}. Upgrade or remove an account before connecting another.`,
+    );
+    err.statusCode = 402;
+    err.accountLimit = limit;
+    err.currentAccounts = current;
+    throw err;
+  }
+};
+
 const shareExpiryToDate = (expiry) => {
   const now = Date.now();
   if (expiry === '24h') return new Date(now + 24 * 60 * 60 * 1000).toISOString();
@@ -1674,6 +1704,8 @@ const shareExpiryToDate = (expiry) => {
 const SHARE_SECTIONS = new Set([
   'overview',
   'analytics',
+  'risk_metrics',
+  'trade_breakdown',
   'calendar',
   'open_positions',
   'closed_trades',
@@ -1840,6 +1872,11 @@ const topSymbolFromStats = (symbolStats = []) => {
     .sort((a, b) => (Number(b.net_profit ?? b.profit ?? 0) || 0) - (Number(a.net_profit ?? a.profit ?? 0) || 0))[0] || null;
 };
 
+const realizedProfitFromHistory = (history = []) =>
+  (Array.isArray(history) ? history : []).reduce((sum, trade) => (
+    sum + (Number(firstValue(trade.net_profit, trade.profit, trade.pnl, trade.closed_profit)) || 0)
+  ), 0);
+
 const serializeAdminAccountInsight = (row = {}) => {
   const accountId = String(row.account_id || '');
   const state = accountId ? g_accounts.get(accountId) : null;
@@ -1851,6 +1888,35 @@ const serializeAdminAccountInsight = (row = {}) => {
   const openPositions = Array.isArray(snapshot.open_positions) ? snapshot.open_positions : [];
   const symbolStats = analytics.symbol_stats || [];
   const bestSymbol = topSymbolFromStats(symbolStats);
+  const balance = numericOrNull(firstValue(account.balance, row.balance));
+  const realizedProfit = realizedProfitFromHistory(history);
+  const estimatedInitialDeposit = balance === null ? null : balance - realizedProfit;
+  const firstDeposit = numericOrNull(firstValue(
+    account.first_deposit,
+    account.initial_deposit,
+    account.starting_deposit,
+    meta.first_deposit,
+  ));
+  const totalDeposits = numericOrNull(firstValue(
+    account.total_deposits,
+    account.deposits_total,
+    meta.total_deposits,
+  ));
+  const totalWithdrawals = numericOrNull(firstValue(
+    account.total_withdrawals,
+    account.withdrawals_total,
+    meta.total_withdrawals,
+  ));
+  const netDeposits = numericOrNull(firstValue(
+    account.net_deposits,
+    meta.net_deposits,
+  ));
+  const totalCredit = numericOrNull(firstValue(
+    account.total_credit,
+    account.credit_total,
+    meta.total_credit,
+  ));
+  const initialDeposit = firstDeposit !== null ? firstDeposit : estimatedInitialDeposit;
 
   const broker = boundedText(firstValue(account.broker, account.company, row.broker, meta.broker, meta.company, state?.config?.broker), 'Unknown broker');
   const serverName = boundedText(firstValue(account.server, meta.server, row.server_name, state?.config?.server), '', 120);
@@ -1887,9 +1953,18 @@ const serializeAdminAccountInsight = (row = {}) => {
     eaStatus: boundedText(firstValue(state?.eaStatus?.status, row.ea_status, state?.online ? 'online' : 'offline'), state?.online ? 'online' : 'offline', 60),
     lastSeenAt: state?.lastSeen ? new Date(state.lastSeen).toISOString() : row.last_seen_at || null,
     snapshotUpdatedAt: row.snapshot_updated_at || null,
-    balance: numericOrNull(firstValue(account.balance, row.balance)),
+    balance,
     equity: numericOrNull(firstValue(account.equity, row.equity)),
     runningProfit: numericOrNull(firstValue(account.profit, row.running_profit)),
+    realizedProfit,
+    initialDeposit,
+    initialDepositSource: firstDeposit !== null ? 'ea' : 'estimated',
+    firstDeposit,
+    totalDeposits,
+    totalWithdrawals,
+    netDeposits,
+    totalCredit,
+    estimatedInitialDeposit,
     openTrades: openPositions.length || numericOrNull(row.open_trades) || 0,
     closedTrades: history.length || numericOrNull(row.closed_trades) || 0,
     winRate: numericOrNull(firstValue(analytics.winRate, analytics.win_rate, analytics.winrate)),
@@ -2051,29 +2126,47 @@ const sendWelcomeEmail = async (user) => {
   const dashboardLink = supportUrl('/dashboard');
   await sendResendEmail({
     to: user.email,
-    subject: 'Welcome to ForexAnalyzer Pro',
+    subject: 'Welcome to ForexAnalyzer Pro - connect your MT5 account',
     text: [
       `Welcome ${user.name || 'Trader'},`,
       '',
-      'Your ForexAnalyzer Pro account is ready. You can connect your MT5 Expert Advisor, watch live trades, review analytics, use the calendar, journal your trades, and manage alerts from your dashboard.',
+      'Your ForexAnalyzer Pro account is ready. The next step is to connect your MT5 account with the Expert Advisor.',
       '',
-      'Start by opening the dashboard, generating your EA API key, and pasting it into the EA inputs in MetaTrader 5.',
+      'Step 1: Open ForexAnalyzer Pro and go to Connect Account.',
+      'Step 2: Generate or copy your EA API key.',
+      `Step 3: In MetaTrader 5 go to Tools > Options > Expert Advisors and allow WebRequest for ${CONFIG.PUBLIC_BASE_URL}.`,
+      'Step 4: Attach the ForexAnalyzer Pro EA to any chart.',
+      'Step 5: Paste your API key in the EA inputs, allow Algo Trading, and click OK.',
+      'Step 6: Return to the dashboard. Your account should appear online shortly.',
+      '',
+      'Need help? Open Support inside ForexAnalyzer Pro and we will help you one-on-one for free until your account is connected.',
+      '',
+      'Recommended broker bonus: if you open an account with one of our recommended brokers, contact support with your broker account proof. Depending on your initial deposit, we can offer 6 months or 1 year of premium access.',
       '',
       dashboardLink,
     ].join('\n'),
     html: supportEmailShell({
-      title: 'Welcome to ForexAnalyzer Pro',
-      intro: 'Your trading analytics workspace is ready.',
+      title: 'Connect your MT5 account in a few minutes',
+      intro: 'Your ForexAnalyzer Pro account is ready. Follow these steps to start seeing live trades, analytics, calendar, journal, alerts, and copy trading from your dashboard.',
       rows: [
         { label: 'Account', value: `${user.name || 'Trader'} <${user.email}>` },
         { label: 'Trial', value: `${CONFIG.FREE_TRIAL_DAYS} days plus ${CONFIG.FREE_TRIAL_GRACE_DAYS} grace days` },
+        { label: 'WebRequest URL', value: CONFIG.PUBLIC_BASE_URL },
+        { label: 'Free setup help', value: 'Open Support in the dashboard for one-on-one account connection help' },
       ],
       message: [
-        'You can now connect your MT5 Expert Advisor, watch live open trades, review your analytics, use the trading calendar, keep a journal, and manage alerts from one dashboard.',
+        '1. Open ForexAnalyzer Pro and go to Connect Account.',
+        '2. Generate or copy your EA API key.',
+        `3. In MetaTrader 5, open Tools > Options > Expert Advisors and whitelist this WebRequest URL: ${CONFIG.PUBLIC_BASE_URL}`,
+        '4. Attach the ForexAnalyzer Pro EA to any chart.',
+        '5. Paste your API key into the EA inputs, allow Algo Trading, and click OK.',
+        '6. Return to ForexAnalyzer Pro. Your account should show online shortly.',
         '',
-        'Open ForexAnalyzer Pro, generate your EA API key, paste it into the EA inputs in MetaTrader 5, and your account will start syncing.',
+        'If you get stuck, open the Support page. We can help you one-on-one for free until the account is connected.',
+        '',
+        'Recommended broker bonus: traders who create accounts with our recommended brokers can contact support for a premium access bonus. Depending on the initial deposit, we can offer 6 months or 1 year of premium access.',
       ].join('\n'),
-      ctaLabel: 'Open dashboard',
+      ctaLabel: 'Connect account',
       ctaUrl: dashboardLink,
     }),
     tags: [
