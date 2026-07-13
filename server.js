@@ -1089,6 +1089,7 @@ const isDashboardReadRequest = (req) => {
   if (req.path === '/auth/me') return true;
   if (req.path.startsWith('/referrals')) return true;
   if (req.path.startsWith('/support')) return true;
+  if (req.path.startsWith('/activity')) return true;
   if (req.method !== 'GET') return false;
   if (req.path === '/accounts') return true;
   if (/^\/accounts\/[^/]+\/(dashboard|status|positions|history|analytics)$/.test(req.path)) return true;
@@ -1645,6 +1646,23 @@ const shareExpiryToDate = (expiry) => {
   return null;
 };
 
+const SHARE_SECTIONS = new Set([
+  'overview',
+  'analytics',
+  'calendar',
+  'open_positions',
+  'closed_trades',
+]);
+
+const DEFAULT_SHARE_SECTIONS = [...SHARE_SECTIONS];
+
+const cleanShareSections = (sections) => {
+  if (!Array.isArray(sections)) return DEFAULT_SHARE_SECTIONS;
+  const cleaned = [...new Set(sections.map((item) => String(item || '').trim()))]
+    .filter((item) => SHARE_SECTIONS.has(item));
+  return cleaned.length ? cleaned : DEFAULT_SHARE_SECTIONS;
+};
+
 const serializeShareLink = (row) => ({
   token: row.token,
   accountId: row.account_id,
@@ -1660,6 +1678,7 @@ const SUPPORT_AGENT_TABLE = 'tradevault_support_agents';
 const REFERRAL_CODE_TABLE = 'tradevault_referral_codes';
 const REFERRAL_TABLE = 'tradevault_referrals';
 const FEEDBACK_TABLE = 'tradevault_feedback_responses';
+const ACTIVITY_TABLE = 'tradevault_user_activity_events';
 
 const SUPPORT_CATEGORIES = new Set([
   'account_connection',
@@ -1742,6 +1761,148 @@ const serializeSupportMessage = (row) => ({
   body: row.body || '',
   attachmentUrl: row.attachment_url || '',
   createdAt: row.created_at,
+});
+
+const numericOrNull = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+};
+
+const boundedText = (value, fallback = '', maxLength = 160) =>
+  String(value ?? fallback ?? '')
+    .replace(/\u0000/g, '')
+    .trim()
+    .slice(0, maxLength);
+
+const inferAccountEnvironment = (source = {}) => {
+  const text = [
+    source.accountType,
+    source.account_type,
+    source.environment,
+    source.tradeMode,
+    source.trade_mode,
+    source.mode,
+    source.broker,
+    source.server,
+  ].filter(Boolean).join(' ').toLowerCase();
+  if (/demo|practice|contest/.test(text)) return 'demo';
+  if (/real|live/.test(text)) return 'live';
+  return 'unknown';
+};
+
+const accountLastTradeAt = (history) => {
+  const latest = (Array.isArray(history) ? history : [])
+    .map(trade => firstValue(trade.closeTime, trade.close_time, trade.time, trade.openTime, trade.open_time))
+    .map(value => {
+      if (!value) return null;
+      const asNumber = Number(value);
+      if (Number.isFinite(asNumber) && asNumber > 0) {
+        return new Date(asNumber > 1e12 ? asNumber : asNumber * 1000).toISOString();
+      }
+      const ms = new Date(value).getTime();
+      return Number.isFinite(ms) ? new Date(ms).toISOString() : null;
+    })
+    .filter(Boolean)
+    .sort()
+    .pop();
+  return latest || null;
+};
+
+const topSymbolFromStats = (symbolStats = []) => {
+  if (!Array.isArray(symbolStats) || !symbolStats.length) return null;
+  return symbolStats
+    .slice()
+    .sort((a, b) => (Number(b.net_profit ?? b.profit ?? 0) || 0) - (Number(a.net_profit ?? a.profit ?? 0) || 0))[0] || null;
+};
+
+const serializeAdminAccountInsight = (row = {}) => {
+  const accountId = String(row.account_id || '');
+  const state = accountId ? g_accounts.get(accountId) : null;
+  const snapshot = state?.processedData || {};
+  const account = snapshot.account || {};
+  const meta = snapshot.meta || {};
+  const analytics = snapshot.analytics || {};
+  const history = Array.isArray(snapshot.trade_history) ? snapshot.trade_history : [];
+  const openPositions = Array.isArray(snapshot.open_positions) ? snapshot.open_positions : [];
+  const symbolStats = analytics.symbol_stats || [];
+  const bestSymbol = topSymbolFromStats(symbolStats);
+
+  const broker = boundedText(firstValue(account.broker, account.company, row.broker, meta.broker, meta.company, state?.config?.broker), 'Unknown broker');
+  const serverName = boundedText(firstValue(account.server, meta.server, row.server_name, state?.config?.server), '', 120);
+  const accountType = boundedText(firstValue(
+    account.account_type,
+    account.type,
+    account.trade_mode,
+    row.account_type,
+    meta.account_type,
+    state?.config?.accountType,
+  ), '', 80);
+  const environment = row.account_environment && row.account_environment !== 'unknown'
+    ? row.account_environment
+    : inferAccountEnvironment({
+        accountType,
+        account_type: row.account_type,
+        broker,
+        server: serverName,
+        environment: row.account_environment,
+      });
+
+  return {
+    accountId,
+    accountName: boundedText(firstValue(account.name, account.login, state?.config?.alias, accountId), accountId),
+    broker,
+    server: serverName,
+    currency: boundedText(firstValue(account.currency, row.currency, state?.config?.currency), ''),
+    leverage: boundedText(firstValue(account.leverage, row.leverage, state?.config?.leverage), ''),
+    accountType,
+    environment,
+    connectionMethod: boundedText(firstValue(row.connection_method, state?.config?.source, 'ea'), 'ea', 40),
+    role: boundedText(firstValue(row.account_role, state?.config?.role, meta.account_config?.role, 'STANDALONE'), 'STANDALONE', 40),
+    online: Boolean(state?.online),
+    eaStatus: boundedText(firstValue(state?.eaStatus?.status, row.ea_status, state?.online ? 'online' : 'offline'), state?.online ? 'online' : 'offline', 60),
+    lastSeenAt: state?.lastSeen ? new Date(state.lastSeen).toISOString() : row.last_seen_at || null,
+    snapshotUpdatedAt: row.snapshot_updated_at || null,
+    balance: numericOrNull(firstValue(account.balance, row.balance)),
+    equity: numericOrNull(firstValue(account.equity, row.equity)),
+    runningProfit: numericOrNull(firstValue(account.profit, row.running_profit)),
+    openTrades: openPositions.length || numericOrNull(row.open_trades) || 0,
+    closedTrades: history.length || numericOrNull(row.closed_trades) || 0,
+    winRate: numericOrNull(firstValue(analytics.winRate, analytics.win_rate, analytics.winrate)),
+    profitFactor: numericOrNull(firstValue(analytics.profitFactor, analytics.profit_factor)),
+    maxDrawdown: numericOrNull(firstValue(analytics.maxDrawdown, analytics.max_drawdown, analytics.max_drawdown_pct)),
+    avgWin: numericOrNull(firstValue(analytics.avgWin, analytics.avg_win)),
+    avgLoss: numericOrNull(firstValue(analytics.avgLoss, analytics.avg_loss)),
+    bestSymbol: bestSymbol ? {
+      symbol: bestSymbol.symbol || '',
+      profit: numericOrNull(firstValue(bestSymbol.net_profit, bestSymbol.profit)),
+      winRate: numericOrNull(firstValue(bestSymbol.win_rate, bestSymbol.winRate)),
+    } : null,
+    lastTradeAt: accountLastTradeAt(history),
+  };
+};
+
+const serializeAdminUserInsight = ({ userId, profile = {}, license = {}, activity = {}, tickets = {}, feedback = {}, accounts = [] }) => ({
+  userId,
+  email: profile.email || license.email || '',
+  name: profile.full_name || profile.nickname || profile.email || license.email || 'Trader',
+  avatar: profile.avatar_url || '',
+  planMode: license.plan_mode || 'free',
+  licenseStatus: license.license_status || license.status || 'trial',
+  trialStartedAt: license.trial_started_at || null,
+  trialEndsAt: license.trial_ends_at || null,
+  graceEndsAt: license.grace_ends_at || null,
+  paidUntil: license.paid_until || null,
+  lastSeenAt: activity.lastSeenAt || null,
+  pageViewsToday: activity.pageViewsToday || 0,
+  mostUsedPage: activity.mostUsedPage || '',
+  openTickets: tickets.open || 0,
+  pendingTickets: tickets.pending || 0,
+  feedbackCount: feedback.count || 0,
+  latestFeedbackScore: feedback.latestScore ?? null,
+  accounts,
+  accountCount: accounts.length,
+  totalBalance: accounts.reduce((sum, account) => sum + (Number(account.balance) || 0), 0),
+  totalEquity: accounts.reduce((sum, account) => sum + (Number(account.equity) || 0), 0),
 });
 
 const loadSupportTicket = async (ticketId) => {
@@ -3646,6 +3807,38 @@ app.use('/api', requireUser);
 app.use('/api', attachTrialLicense);
 app.use('/api', enforceTrialAccess);
 
+app.post('/api/activity/page-view', async (req, res) => {
+  if (!supabase) return res.json({ success: false, reason: 'database_disabled' });
+
+  try {
+    const pagePath = cleanSupportText(firstValue(req.body?.pagePath, req.body?.path), 240) || '/';
+    const pageTitle = cleanSupportText(firstValue(req.body?.pageTitle, req.body?.title), 180);
+    const referrer = cleanSupportText(req.body?.referrer, 320);
+    const metadata = req.body?.metadata && typeof req.body.metadata === 'object' && !Array.isArray(req.body.metadata)
+      ? req.body.metadata
+      : {};
+    const { error } = await dbFrom(ACTIVITY_TABLE).insert({
+      user_id: req.user.id,
+      event_type: 'page_view',
+      page_path: pagePath,
+      page_title: pageTitle || null,
+      referrer: referrer || null,
+      user_agent: cleanSupportText(req.headers['user-agent'], 500) || null,
+      metadata,
+      created_at: new Date().toISOString(),
+    });
+    if (error) {
+      const missingTable = error.code === '42P01' || /tradevault_user_activity_events/i.test(error.message || '');
+      if (missingTable) return res.json({ success: false, missingTable: true });
+      throw error;
+    }
+    res.status(201).json({ success: true });
+  } catch (error) {
+    logDbError(`activity page-view:${req.user.id}`, error);
+    res.status(500).json({ error: error.message || 'Could not record page activity' });
+  }
+});
+
 app.get('/api/auth/me', async (req, res) => {
   const keyRows = supabase
     ? await dbFrom('tradevault_user_ea_keys')
@@ -4056,6 +4249,201 @@ app.get('/api/support/admin/users', async (req, res) => {
   }
 });
 
+app.get('/api/support/admin/insights', async (req, res) => {
+  const agent = await requireSupportAgent(req, res);
+  if (!agent) return;
+
+  const startOfToday = new Date();
+  startOfToday.setHours(0, 0, 0, 0);
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+  const safeSelect = async (label, query, fallback = []) => {
+    const { data, error } = await query;
+    if (error) {
+      const missing = error.code === '42P01'
+        || /does not exist|schema cache|tradevault_user_activity_events|forexanalyzer_client_overview/i.test(error.message || '');
+      if (missing) {
+        logDbError(`${label} missing`, error);
+        return fallback;
+      }
+      throw error;
+    }
+    return data || fallback;
+  };
+
+  try {
+    const [overviewRows, ticketRows, feedbackRows, activityTodayRows, activityRecentRows] = await Promise.all([
+      safeSelect('admin overview', dbFrom('forexanalyzer_client_overview')
+        .select('*')
+        .order('snapshot_updated_at', { ascending: false })
+        .limit(1000)),
+      safeSelect('admin ticket stats', dbFrom(SUPPORT_TICKET_TABLE)
+        .select('id,user_id,status,priority,category,last_message_at,created_at,updated_at')
+        .order('last_message_at', { ascending: false })
+        .limit(1000)),
+      safeSelect('admin feedback stats', dbFrom(FEEDBACK_TABLE)
+        .select('id,user_id,email,page_path,score,responses,created_at')
+        .order('created_at', { ascending: false })
+        .limit(500)),
+      safeSelect('admin activity today', dbFrom(ACTIVITY_TABLE)
+        .select('id,user_id,page_path,page_title,created_at')
+        .eq('event_type', 'page_view')
+        .gte('created_at', startOfToday.toISOString())
+        .order('created_at', { ascending: false })
+        .limit(5000)),
+      safeSelect('admin activity recent', dbFrom(ACTIVITY_TABLE)
+        .select('id,user_id,page_path,page_title,created_at')
+        .eq('event_type', 'page_view')
+        .order('created_at', { ascending: false })
+        .limit(2000)),
+    ]);
+
+    const userIds = new Set();
+    for (const row of overviewRows) if (row.user_id) userIds.add(row.user_id);
+    for (const row of ticketRows) if (row.user_id) userIds.add(row.user_id);
+    for (const row of feedbackRows) if (row.user_id) userIds.add(row.user_id);
+    for (const row of activityRecentRows) if (row.user_id) userIds.add(row.user_id);
+
+    const profiles = await loadSupportProfiles([...userIds]);
+    const accountsByUser = new Map();
+    const licenseByUser = new Map();
+
+    for (const row of overviewRows) {
+      if (!row.user_id) continue;
+      if (!licenseByUser.has(row.user_id)) licenseByUser.set(row.user_id, row);
+      if (row.account_id) {
+        const next = serializeAdminAccountInsight(row);
+        const list = accountsByUser.get(row.user_id) || [];
+        list.push(next);
+        accountsByUser.set(row.user_id, list);
+      }
+    }
+
+    const ticketStatsByUser = new Map();
+    const ticketTotals = { open: 0, pending: 0, resolved: 0, closed: 0, urgent: 0 };
+    for (const row of ticketRows) {
+      const status = row.status || 'open';
+      if (ticketTotals[status] !== undefined) ticketTotals[status] += 1;
+      if (row.priority === 'urgent') ticketTotals.urgent += 1;
+      if (!row.user_id) continue;
+      const stats = ticketStatsByUser.get(row.user_id) || { open: 0, pending: 0, resolved: 0, closed: 0 };
+      if (stats[status] !== undefined) stats[status] += 1;
+      ticketStatsByUser.set(row.user_id, stats);
+    }
+
+    const feedbackStatsByUser = new Map();
+    const feedbackScores = [];
+    for (const row of feedbackRows) {
+      if (Number.isFinite(Number(row.score))) feedbackScores.push(Number(row.score));
+      if (!row.user_id) continue;
+      const stats = feedbackStatsByUser.get(row.user_id) || { count: 0, latestScore: null };
+      stats.count += 1;
+      if (stats.latestScore === null && Number.isFinite(Number(row.score))) stats.latestScore = Number(row.score);
+      feedbackStatsByUser.set(row.user_id, stats);
+    }
+
+    const pageCounts = new Map();
+    const userActivity = new Map();
+    for (const row of activityTodayRows) {
+      const pathName = boundedText(row.page_path || '/', '/', 240);
+      pageCounts.set(pathName, (pageCounts.get(pathName) || 0) + 1);
+      if (!row.user_id) continue;
+      const activity = userActivity.get(row.user_id) || {
+        pageViewsToday: 0,
+        lastSeenAt: null,
+        pages: new Map(),
+      };
+      activity.pageViewsToday += 1;
+      activity.lastSeenAt = activity.lastSeenAt || row.created_at;
+      activity.pages.set(pathName, (activity.pages.get(pathName) || 0) + 1);
+      userActivity.set(row.user_id, activity);
+    }
+    for (const row of activityRecentRows) {
+      if (!row.user_id) continue;
+      const activity = userActivity.get(row.user_id) || {
+        pageViewsToday: 0,
+        lastSeenAt: null,
+        pages: new Map(),
+      };
+      if (!activity.lastSeenAt) activity.lastSeenAt = row.created_at;
+      userActivity.set(row.user_id, activity);
+    }
+
+    const users = [...userIds].map((userId) => {
+      const activity = userActivity.get(userId) || {};
+      const pageEntries = activity.pages ? [...activity.pages.entries()] : [];
+      const mostUsedPage = pageEntries.sort((a, b) => b[1] - a[1])[0]?.[0] || '';
+      return serializeAdminUserInsight({
+        userId,
+        profile: profiles.get(userId) || {},
+        license: licenseByUser.get(userId) || {},
+        activity: { ...activity, mostUsedPage },
+        tickets: ticketStatsByUser.get(userId) || {},
+        feedback: feedbackStatsByUser.get(userId) || {},
+        accounts: accountsByUser.get(userId) || [],
+      });
+    }).sort((a, b) => {
+      const bSeen = b.lastSeenAt ? new Date(b.lastSeenAt).getTime() : 0;
+      const aSeen = a.lastSeenAt ? new Date(a.lastSeenAt).getTime() : 0;
+      return bSeen - aSeen;
+    });
+
+    const accounts = users.flatMap(user => user.accounts.map(account => ({ ...account, userId: user.userId, userName: user.name, userEmail: user.email })));
+    const activeTodayUsers = new Set(activityTodayRows.map(row => row.user_id).filter(Boolean));
+    const activeLastHourUsers = new Set(activityTodayRows
+      .filter(row => row.user_id && row.created_at >= oneHourAgo)
+      .map(row => row.user_id));
+    const pageUsage = [...pageCounts.entries()]
+      .map(([path, views]) => ({ path, views }))
+      .sort((a, b) => b.views - a.views)
+      .slice(0, 20);
+
+    res.json({
+      agent: {
+        userId: agent.user_id,
+        role: agent.role,
+        displayName: agent.display_name || req.user.name,
+      },
+      generatedAt: new Date().toISOString(),
+      metrics: {
+        totalUsers: users.length,
+        usersOpenedToday: activeTodayUsers.size,
+        activeLastHour: activeLastHourUsers.size,
+        pageViewsToday: activityTodayRows.length,
+        mostUsedPage: pageUsage[0]?.path || '',
+        connectedAccounts: accounts.length,
+        liveAccounts: accounts.filter(account => account.environment === 'live').length,
+        demoAccounts: accounts.filter(account => account.environment === 'demo').length,
+        onlineAccounts: accounts.filter(account => account.online).length,
+        totalTrackedBalance: accounts.reduce((sum, account) => sum + (Number(account.balance) || 0), 0),
+        totalTrackedEquity: accounts.reduce((sum, account) => sum + (Number(account.equity) || 0), 0),
+        openTickets: ticketTotals.open + ticketTotals.pending,
+        urgentTickets: ticketTotals.urgent,
+        feedbackCount: feedbackRows.length,
+        averageFeedbackScore: feedbackScores.length
+          ? feedbackScores.reduce((sum, score) => sum + score, 0) / feedbackScores.length
+          : null,
+      },
+      pageUsage,
+      ticketTotals,
+      users,
+      accounts,
+      recentFeedback: feedbackRows.slice(0, 20).map(row => ({
+        id: row.id,
+        userId: row.user_id,
+        email: row.email || profiles.get(row.user_id)?.email || '',
+        name: profiles.get(row.user_id)?.full_name || profiles.get(row.user_id)?.nickname || '',
+        pagePath: row.page_path,
+        score: row.score,
+        responses: row.responses || {},
+        createdAt: row.created_at,
+      })),
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || 'Could not load admin insights' });
+  }
+});
+
 app.get('/api/support/admin/feedback', async (req, res) => {
   const agent = await requireSupportAgent(req, res);
   if (!agent) return;
@@ -4125,13 +4513,23 @@ app.post('/api/share-links', async (req, res) => {
     return res.status(409).json({ error: 'This account has no dashboard data yet. Start the EA once, then create the share link.' });
   }
 
+  const sections = cleanShareSections(req.body?.sections);
+  const shareSnapshot = {
+    ...cloneJSON(snapshot),
+    share_options: {
+      sections,
+      visibility: 'private_link',
+      created_at: new Date().toISOString(),
+    },
+  };
+
   const token = crypto.randomBytes(24).toString('hex');
   const row = {
     token,
     user_id: req.user.id,
     account_id: String(accountId),
     label: String(label || state?.config?.alias || accountId),
-    snapshot: cloneJSON(snapshot),
+    snapshot: shareSnapshot,
     expires_at: shareExpiryToDate(expiry),
   };
 
@@ -4604,17 +5002,27 @@ app.get('/api/copy/queue-stats', (req, res) => {
   res.json({ queues: result });
 });
 
-app.post('/api/copy/pairs', (req, res) => {
-  const { masterAccountId, slaveAccountId, lotMultiplier = 1.0, copySL = true, copyTP = true } = req.body;
+const getSlaveIdsForMaster = (masterAccountId, excludeSlaveId = '') => {
+  const ids = [];
+  g_accounts.forEach((state, id) => {
+    if (String(id) === String(excludeSlaveId)) return;
+    if (state.config.role === 'SLAVE' && String(state.config.masterAccountId) === String(masterAccountId)) {
+      ids.push(id);
+    }
+  });
+  return ids;
+};
 
-  if (!masterAccountId || !slaveAccountId) return res.status(400).json({ error: 'masterAccountId and slaveAccountId required' });
-  if (masterAccountId === slaveAccountId)   return res.status(400).json({ error: 'masterAccountId and slaveAccountId must differ' });
-  if (!g_accounts.has(masterAccountId))     return res.status(400).json({ error: `Master account ${masterAccountId} not registered` });
-  if (!g_accounts.has(slaveAccountId))      return res.status(400).json({ error: `Slave account ${slaveAccountId} not registered` });
-  if (!userOwnsAccount(req.user.id, masterAccountId) || !userOwnsAccount(req.user.id, slaveAccountId)) {
-    return res.status(403).json({ error: 'Both copy-pair accounts must belong to your user' });
-  }
+const normalizeCopySlaveIds = (body) => {
+  const raw = Array.isArray(body?.slaveAccountIds)
+    ? body.slaveAccountIds
+    : Array.isArray(body?.slaveIds)
+      ? body.slaveIds
+      : [body?.slaveAccountId];
+  return [...new Set(raw.map((id) => String(id || '').trim()).filter(Boolean))];
+};
 
+const applyCopyPair = ({ masterAccountId, slaveAccountId, lotMultiplier, copySL, copyTP }) => {
   const masterState = g_accounts.get(masterAccountId);
   const slaveState  = g_accounts.get(slaveAccountId);
 
@@ -4625,15 +5033,13 @@ app.post('/api/copy/pairs', (req, res) => {
   slaveState.config.copySL            = copySL;
   slaveState.config.copyTP            = copyTP;
   slaveState.config.active            = true;
-  slaveState.config.pairCreatedAt     = new Date().toISOString();
+  slaveState.config.pairCreatedAt     = slaveState.config.pairCreatedAt || new Date().toISOString();
 
-  persistAccountRegistry();
   scheduleAccountSnapshotPersist(masterState, 0);
   scheduleAccountSnapshotPersist(slaveState, 0);
   g_copyQueues.delete(slaveAccountId);
   g_copyLatency.delete(slaveAccountId);
 
-  // Sync copy settings into the slave's settings file
   const existingSettings = loadAccountSettings(slaveAccountId);
   saveAccountSettings(slaveAccountId, {
     ...existingSettings,
@@ -4648,7 +5054,71 @@ app.post('/api/copy/pairs', (req, res) => {
   sendCommand(slaveAccountId, { action: 'RESUME_TRADING' });
   sendCommand(slaveAccountId, { action: 'RELOAD_SETTINGS' });
 
-  return res.status(201).json({ ok: true, pair: buildPairObject(masterAccountId, slaveAccountId) });
+  return buildPairObject(masterAccountId, slaveAccountId);
+};
+
+app.post('/api/copy/pairs', (req, res) => {
+  const {
+    masterAccountId,
+    lotMultiplier = 1.0,
+    copySL = true,
+    copyTP = true,
+  } = req.body;
+  const slaveAccountIds = normalizeCopySlaveIds(req.body);
+
+  if (!masterAccountId || slaveAccountIds.length === 0) {
+    return res.status(400).json({ error: 'masterAccountId and at least one slave account are required' });
+  }
+  if (!g_accounts.has(masterAccountId)) {
+    return res.status(400).json({ error: `Master account ${masterAccountId} not registered` });
+  }
+  if (!userOwnsAccount(req.user.id, masterAccountId)) {
+    return res.status(403).json({ error: `Master account ${masterAccountId} is not linked to your user` });
+  }
+
+  const masterState = g_accounts.get(masterAccountId);
+  if (masterState.config.role === 'SLAVE') {
+    return res.status(400).json({ error: `Account ${masterAccountId} is already following master ${masterState.config.masterAccountId}. Remove that slave pair before using it as a master.` });
+  }
+
+  for (const slaveAccountId of slaveAccountIds) {
+    if (masterAccountId === slaveAccountId) {
+      return res.status(400).json({ error: `Account ${slaveAccountId} cannot copy itself` });
+    }
+    if (!g_accounts.has(slaveAccountId)) {
+      return res.status(400).json({ error: `Slave account ${slaveAccountId} not registered` });
+    }
+    if (!userOwnsAccount(req.user.id, slaveAccountId)) {
+      return res.status(403).json({ error: `Slave account ${slaveAccountId} is not linked to your user` });
+    }
+    const slaveState = g_accounts.get(slaveAccountId);
+    if (slaveState.config.role === 'MASTER' && getSlaveIdsForMaster(slaveAccountId).length > 0) {
+      return res.status(400).json({ error: `Account ${slaveAccountId} is already a master. Remove its slave pairs before using it as a slave.` });
+    }
+    if (slaveState.config.role === 'SLAVE' && slaveState.config.masterAccountId && String(slaveState.config.masterAccountId) !== String(masterAccountId)) {
+      return res.status(400).json({ error: `Account ${slaveAccountId} already follows master ${slaveState.config.masterAccountId}. Remove that pair before reassigning it.` });
+    }
+  }
+
+  const pairs = slaveAccountIds
+    .map((slaveAccountId) => applyCopyPair({
+      masterAccountId,
+      slaveAccountId,
+      lotMultiplier,
+      copySL,
+      copyTP,
+    }))
+    .filter(Boolean);
+
+  persistAccountRegistry();
+
+  return res.status(201).json({
+    ok: true,
+    pair: pairs[0] || null,
+    pairs,
+    masterAccountId,
+    slaveAccountIds,
+  });
 });
 
 app.put('/api/copy/pairs/:slaveAccountId', (req, res) => {
@@ -4700,6 +5170,7 @@ app.delete('/api/copy/pairs/:slaveAccountId', (req, res) => {
   const slaveState = g_accounts.get(slaveAccountId);
   if (!slaveState) return res.status(404).json({ error: `Slave account ${slaveAccountId} not found` });
   if (!userOwnsAccount(req.user.id, slaveAccountId)) return res.status(403).json({ error: `Account ${slaveAccountId} is not linked to your user` });
+  const masterAccountId = slaveState.config.masterAccountId;
 
   slaveState.config.role            = 'STANDALONE';
   slaveState.config.masterAccountId = null;
@@ -4714,6 +5185,13 @@ app.delete('/api/copy/pairs/:slaveAccountId', (req, res) => {
   g_copyLatency.delete(slaveAccountId);
   persistAccountRegistry();
   scheduleAccountSnapshotPersist(slaveState, 0);
+
+  const masterState = masterAccountId ? g_accounts.get(masterAccountId) : null;
+  if (masterState && masterState.config.role === 'MASTER' && getSlaveIdsForMaster(masterAccountId, slaveAccountId).length === 0) {
+    masterState.config.role = 'STANDALONE';
+    scheduleAccountSnapshotPersist(masterState, 0);
+    persistAccountRegistry();
+  }
 
   sendCommand(slaveAccountId, { action: 'RELOAD_SETTINGS' });
 

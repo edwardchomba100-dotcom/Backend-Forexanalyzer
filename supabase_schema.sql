@@ -224,6 +224,27 @@ create index if not exists tradevault_feedback_responses_created_idx
 create index if not exists tradevault_feedback_responses_user_idx
   on public.tradevault_feedback_responses (user_id, created_at desc);
 
+create table if not exists public.tradevault_user_activity_events (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete set null,
+  event_type text not null default 'page_view',
+  page_path text,
+  page_title text,
+  referrer text,
+  user_agent text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists tradevault_user_activity_events_created_idx
+  on public.tradevault_user_activity_events (created_at desc);
+
+create index if not exists tradevault_user_activity_events_user_created_idx
+  on public.tradevault_user_activity_events (user_id, created_at desc);
+
+create index if not exists tradevault_user_activity_events_page_created_idx
+  on public.tradevault_user_activity_events (page_path, created_at desc);
+
 create table if not exists public.tradevault_support_agents (
   user_id uuid primary key references auth.users(id) on delete cascade,
   role text not null default 'agent',
@@ -299,6 +320,7 @@ alter table public.tradevault_share_links enable row level security;
 alter table public.tradevault_referral_codes enable row level security;
 alter table public.tradevault_referrals enable row level security;
 alter table public.tradevault_feedback_responses enable row level security;
+alter table public.tradevault_user_activity_events enable row level security;
 alter table public.tradevault_support_agents enable row level security;
 alter table public.tradevault_support_tickets enable row level security;
 alter table public.tradevault_support_messages enable row level security;
@@ -352,6 +374,24 @@ create policy feedback_select_agent
   for select
   using (
     exists (
+      select 1 from public.tradevault_support_agents a
+      where a.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists activity_events_insert_self on public.tradevault_user_activity_events;
+create policy activity_events_insert_self
+  on public.tradevault_user_activity_events
+  for insert
+  with check (auth.uid() = user_id);
+
+drop policy if exists activity_events_select_own_or_agent on public.tradevault_user_activity_events;
+create policy activity_events_select_own_or_agent
+  on public.tradevault_user_activity_events
+  for select
+  using (
+    auth.uid() = user_id
+    or exists (
       select 1 from public.tradevault_support_agents a
       where a.user_id = auth.uid()
     )
@@ -449,6 +489,36 @@ select
   o.account_id,
   coalesce(s.config ->> 'connectionMethod', s.config ->> 'source', 'ea') as connection_method,
   s.config ->> 'broker' as broker,
+  coalesce(
+    s.processed_data #>> '{account,account_type}',
+    s.processed_data #>> '{account,type}',
+    s.processed_data #>> '{account,trade_mode}',
+    s.processed_data #>> '{meta,account_type}',
+    s.config ->> 'accountType',
+    ''
+  ) as account_type,
+  case
+    when lower(coalesce(
+      s.processed_data #>> '{account,account_type}',
+      s.processed_data #>> '{account,type}',
+      s.processed_data #>> '{account,trade_mode}',
+      s.processed_data #>> '{meta,account_type}',
+      s.config ->> 'accountType',
+      ''
+    )) similar to '%(demo|practice|contest)%' then 'demo'
+    when lower(coalesce(
+      s.processed_data #>> '{account,account_type}',
+      s.processed_data #>> '{account,type}',
+      s.processed_data #>> '{account,trade_mode}',
+      s.processed_data #>> '{meta,account_type}',
+      s.config ->> 'accountType',
+      ''
+    )) similar to '%(real|live)%' then 'live'
+    else 'unknown'
+  end as account_environment,
+  coalesce(s.processed_data #>> '{account,currency}', s.config ->> 'currency', '') as currency,
+  coalesce(s.processed_data #>> '{account,leverage}', s.config ->> 'leverage', '') as leverage,
+  coalesce(s.processed_data #>> '{account,server}', s.processed_data #>> '{meta,server}', s.config ->> 'server', '') as server_name,
   coalesce(s.config ->> 'role', s.processed_data #>> '{meta,account_config,role}', 'STANDALONE') as account_role,
   case
     when (s.processed_data #>> '{account,balance}') ~ '^-?[0-9]+(\.[0-9]+)?$'
@@ -460,6 +530,11 @@ select
       then (s.processed_data #>> '{account,equity}')::numeric
     else null
   end as equity,
+  case
+    when (s.processed_data #>> '{account,profit}') ~ '^-?[0-9]+(\.[0-9]+)?$'
+      then (s.processed_data #>> '{account,profit}')::numeric
+    else null
+  end as running_profit,
   case
     when jsonb_typeof(s.processed_data -> 'open_positions') = 'array'
       then jsonb_array_length(s.processed_data -> 'open_positions')
