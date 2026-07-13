@@ -534,6 +534,22 @@ const sanitizeUser = (user) => ({
   avatar: user.user_metadata?.avatar_url || user.user_metadata?.picture || '',
 });
 
+const getRequestTimezone = (req) => {
+  const raw = firstValue(
+    req?.headers?.['x-fap-timezone'],
+    req?.headers?.['x-user-timezone'],
+    req?.body?.timezone,
+  );
+  const timezone = cleanIdentityText(raw, 80);
+  if (!timezone) return CONFIG.STREAK_TIMEZONE;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format(new Date());
+    return timezone;
+  } catch {
+    return CONFIG.STREAK_TIMEZONE;
+  }
+};
+
 const getAuthenticatedUser = async (token) => {
   if (!supabase || !token) return null;
   const cacheKey = hashSecret(token);
@@ -551,12 +567,13 @@ const getAuthenticatedUser = async (token) => {
   return data.user;
 };
 
-const upsertUserProfile = (user) => {
+const upsertUserProfile = (user, timezone = '') => {
   if (!supabase || !user?.id) return;
   const last = g_profileUpsertAt.get(user.id) || 0;
   if (Date.now() - last < 6 * 60 * 60 * 1000) return;
   g_profileUpsertAt.set(user.id, Date.now());
   const clean = sanitizeUser(user);
+  const safeTimezone = cleanIdentityText(timezone, 80) || CONFIG.STREAK_TIMEZONE;
   runDbTask(`profile:${user.id}`, async () => {
     const existing = await dbFrom('tradevault_user_profiles')
       .select('user_id')
@@ -569,6 +586,7 @@ const upsertUserProfile = (user) => {
       email: clean.email,
       full_name: clean.name,
       avatar_url: clean.avatar,
+      timezone: safeTimezone,
       created_at: existing.data ? undefined : new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }, { onConflict: 'user_id' });
@@ -590,7 +608,7 @@ const requireUser = async (req, res, next) => {
   if (!user) return res.status(401).json({ error: 'Authentication required' });
 
   req.user = sanitizeUser(user);
-  upsertUserProfile(user);
+  upsertUserProfile(user, getRequestTimezone(req));
   return next();
 };
 
@@ -2001,7 +2019,7 @@ const serializeAdminAccountInsight = (row = {}) => {
   };
 };
 
-const serializeAdminUserInsight = ({ userId, profile = {}, license = {}, activity = {}, tickets = {}, feedback = {}, accounts = [] }) => ({
+const serializeAdminUserInsight = ({ userId, profile = {}, license = {}, activity = {}, tickets = {}, feedback = {}, accounts = [], streak = {} }) => ({
   userId,
   email: profile.email || license.email || '',
   name: profile.full_name || profile.nickname || profile.email || license.email || 'Trader',
@@ -2023,6 +2041,7 @@ const serializeAdminUserInsight = ({ userId, profile = {}, license = {}, activit
   accountCount: accounts.length,
   totalBalance: accounts.reduce((sum, account) => sum + (Number(account.balance) || 0), 0),
   totalEquity: accounts.reduce((sum, account) => sum + (Number(account.equity) || 0), 0),
+  streak: serializeStreak(streak || { user_id: userId, timezone: profile.timezone || CONFIG.STREAK_TIMEZONE }),
 });
 
 const loadSupportTicket = async (ticketId) => {
@@ -2049,7 +2068,7 @@ const loadSupportProfiles = async (userIds) => {
   const profiles = new Map();
   for (const id of ids) {
     const { data, error } = await dbFrom('tradevault_user_profiles')
-      .select('user_id,email,full_name,avatar_url,nickname')
+      .select('user_id,email,full_name,avatar_url,nickname,timezone')
       .eq('user_id', id)
       .maybeSingle();
     if (error) throw error;
@@ -2278,9 +2297,16 @@ const sendCustomerSupportEmail = async ({ ticket, body }) => {
 
 const STREAK_MILESTONES = [5, 10, 30, 60, 100, 200, 365];
 
-const getBusinessDateParts = (date = new Date()) => {
+const getBusinessDateParts = (date = new Date(), timezone = CONFIG.STREAK_TIMEZONE) => {
+  let safeTimezone = timezone || CONFIG.STREAK_TIMEZONE;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: safeTimezone }).format(date);
+  } catch {
+    safeTimezone = CONFIG.STREAK_TIMEZONE;
+  }
+
   const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: CONFIG.STREAK_TIMEZONE,
+    timeZone: safeTimezone,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',
@@ -2300,6 +2326,7 @@ const getBusinessDateParts = (date = new Date()) => {
     weekdayIndex,
     hour: Number(parts.hour || 0),
     monthPeriod: `${parts.year}-${parts.month}`,
+    timezone: safeTimezone,
   };
 };
 
@@ -2343,7 +2370,8 @@ const normalizeMilestones = (value) => {
 };
 
 const serializeStreak = (row = {}, extra = {}) => {
-  const parts = getBusinessDateParts();
+  const timezone = row.timezone || extra.timezone || CONFIG.STREAK_TIMEZONE;
+  const parts = getBusinessDateParts(new Date(), timezone);
   const lastActiveDate = String(row.last_active_date || '').slice(0, 10) || null;
   const currentStreak = Number(row.current_streak || 0);
   const longestStreak = Number(row.longest_streak || 0);
@@ -2360,7 +2388,7 @@ const serializeStreak = (row = {}, extra = {}) => {
     fireState: active ? 'burning' : 'dull',
     status: row.status || (active ? 'active' : 'inactive'),
     today: parts.ymd,
-    timezone: CONFIG.STREAK_TIMEZONE,
+    timezone: parts.timezone,
     marketDay,
     marketPaused: !marketDay,
     lastActiveDate,
@@ -2379,7 +2407,7 @@ const serializeStreak = (row = {}, extra = {}) => {
 
 const loadStreakRow = async (userId) => {
   const { data, error } = await dbFrom(STREAK_TABLE)
-    .select('user_id,current_streak,longest_streak,last_active_date,last_seen_at,status,monthly_restore_period,monthly_restore_count,total_restores_used,restore_limit,milestones_sent,created_at,updated_at')
+    .select('user_id,current_streak,longest_streak,last_active_date,last_seen_at,timezone,status,monthly_restore_period,monthly_restore_count,total_restores_used,restore_limit,milestones_sent,created_at,updated_at')
     .eq('user_id', userId)
     .maybeSingle();
   if (error) throw error;
@@ -2400,10 +2428,10 @@ const recordStreakEvent = async ({ userId, eventType, activityDate, streakCount,
   if (error && !isMissingTableError(error, STREAK_EVENT_TABLE)) throw error;
 };
 
-const recordStreakCheckIn = async (user, metadata = {}) => {
+const recordStreakCheckIn = async (user, metadata = {}, timezone = CONFIG.STREAK_TIMEZONE) => {
   if (!supabase || !user?.id) return { streak: serializeStreak(), databaseDisabled: true };
 
-  const parts = getBusinessDateParts();
+  const parts = getBusinessDateParts(new Date(), timezone);
   const nowIso = new Date().toISOString();
   const existing = await loadStreakRow(user.id);
   const row = existing || {
@@ -2411,6 +2439,7 @@ const recordStreakCheckIn = async (user, metadata = {}) => {
     current_streak: 0,
     longest_streak: 0,
     last_active_date: null,
+    timezone: parts.timezone,
     monthly_restore_period: parts.monthPeriod,
     monthly_restore_count: 0,
     total_restores_used: 0,
@@ -2485,6 +2514,7 @@ const recordStreakCheckIn = async (user, metadata = {}) => {
     longest_streak: longestStreak,
     last_active_date: lastActiveDate,
     last_seen_at: nowIso,
+    timezone: parts.timezone,
     status,
     monthly_restore_period: monthlyRestorePeriod,
     monthly_restore_count: monthlyRestoreCount,
@@ -2497,7 +2527,7 @@ const recordStreakCheckIn = async (user, metadata = {}) => {
 
   const { data, error } = await dbFrom(STREAK_TABLE)
     .upsert(payload, { onConflict: 'user_id' })
-    .select('user_id,current_streak,longest_streak,last_active_date,last_seen_at,status,monthly_restore_period,monthly_restore_count,total_restores_used,restore_limit,milestones_sent,created_at,updated_at')
+    .select('user_id,current_streak,longest_streak,last_active_date,last_seen_at,timezone,status,monthly_restore_period,monthly_restore_count,total_restores_used,restore_limit,milestones_sent,created_at,updated_at')
     .maybeSingle();
   if (error) throw error;
 
@@ -2617,13 +2647,13 @@ const sendNoAccountHelpEmail = (profile, reason = 'three_hour_setup_help') =>
     }),
   });
 
-const sendStreakReminderEmail = (profile, streak) =>
+const sendStreakReminderEmail = (profile, streak, parts = getBusinessDateParts(new Date(), streak.timezone || profile.timezone || CONFIG.STREAK_TIMEZONE)) =>
   sendDedupeEmail({
     userId: profile.user_id,
     email: profile.email,
     emailType: 'streak_reminder',
-    dedupeKey: `streak-reminder:${profile.user_id}:${getBusinessDateParts().ymd}`,
-    metadata: { currentStreak: streak.current_streak || 0 },
+    dedupeKey: `streak-reminder:${profile.user_id}:${parts.ymd}`,
+    metadata: { currentStreak: streak.current_streak || 0, timezone: parts.timezone },
     build: () => ({
       to: profile.email,
       subject: 'Your ForexAnalyzer Pro streak is waiting today',
@@ -2641,6 +2671,7 @@ const sendStreakReminderEmail = (profile, streak) =>
         rows: [
           { label: 'Current streak', value: `${streak.current_streak || 0} trading days` },
           { label: 'Restores left', value: `${Math.max(0, (streak.restore_limit || CONFIG.STREAK_BASE_RESTORES) - (streak.monthly_restore_count || 0))} this month` },
+          { label: 'Your timezone', value: parts.timezone },
         ],
         message: 'Open ForexAnalyzer Pro today to activate your streak, review your dashboard, and stay in rhythm with your trading plan.',
         ctaLabel: 'Activate streak',
@@ -2650,7 +2681,7 @@ const sendStreakReminderEmail = (profile, streak) =>
         { name: 'type', value: 'streak_reminder' },
         { name: 'user_id', value: String(profile.user_id || '').replace(/[^a-zA-Z0-9_-]/g, '_') },
       ],
-      idempotencyKey: `streak-reminder-${profile.user_id}-${getBusinessDateParts().ymd}`,
+      idempotencyKey: `streak-reminder-${profile.user_id}-${parts.ymd}`,
     }),
   });
 
@@ -2678,7 +2709,7 @@ const sendMissYouEmail = (profile, lastSeenAt) =>
         title: 'A quick trading wellness check',
         intro: 'We have not seen you for more than a week. If trading or the system has been frustrating, we are here to help.',
         rows: [
-          { label: 'Last seen', value: lastSeenAt ? new Date(lastSeenAt).toLocaleString('en-US', { timeZone: CONFIG.STREAK_TIMEZONE }) : 'More than a week ago' },
+          { label: 'Last seen', value: lastSeenAt ? new Date(lastSeenAt).toLocaleString('en-US', { timeZone: profile.timezone || CONFIG.STREAK_TIMEZONE }) : 'More than a week ago' },
           { label: 'Support', value: 'Ask us anything about setup, EA connection, or your trading workflow' },
         ],
         message: 'Open ForexAnalyzer Pro to review your account, or contact support if something is blocking you. We want the platform to support your trading routine, not sit unused when you need help.',
@@ -2695,7 +2726,7 @@ const sendMissYouEmail = (profile, lastSeenAt) =>
 
 const loadRetentionProfiles = async () => {
   const { data, error } = await dbFrom('tradevault_user_profiles')
-    .select('user_id,email,full_name,nickname,created_at,updated_at')
+    .select('user_id,email,full_name,nickname,timezone,created_at,updated_at')
     .order('updated_at', { ascending: false })
     .limit(1000);
   if (error) throw error;
@@ -2742,11 +2773,8 @@ const runNoAccountHelpEmails = async ({ initialBlast = false } = {}) => {
 };
 
 const runStreakReminderEmails = async () => {
-  const parts = getBusinessDateParts();
-  if (!isMarketDateYmd(parts.ymd) || parts.hour < CONFIG.STREAK_REMINDER_HOUR) return;
-
   const { data, error } = await dbFrom(STREAK_TABLE)
-    .select('user_id,current_streak,last_active_date,monthly_restore_count,restore_limit,status,last_seen_at')
+    .select('user_id,current_streak,last_active_date,monthly_restore_count,restore_limit,status,last_seen_at,timezone')
     .order('last_seen_at', { ascending: false })
     .limit(1000);
   if (error) {
@@ -2756,11 +2784,13 @@ const runStreakReminderEmails = async () => {
 
   const profiles = await loadSupportProfiles((data || []).map(row => row.user_id));
   for (const streak of data || []) {
+    const profile = profiles.get(streak.user_id);
+    const parts = getBusinessDateParts(new Date(), streak.timezone || profile?.timezone || CONFIG.STREAK_TIMEZONE);
+    if (!isMarketDateYmd(parts.ymd) || parts.hour < CONFIG.STREAK_REMINDER_HOUR) continue;
     if ((Number(streak.current_streak) || 0) <= 0) continue;
     if (String(streak.last_active_date || '').slice(0, 10) === parts.ymd) continue;
-    const profile = profiles.get(streak.user_id);
     if (!profile?.email) continue;
-    await sendStreakReminderEmail({ ...profile, user_id: streak.user_id }, streak);
+    await sendStreakReminderEmail({ ...profile, user_id: streak.user_id }, streak, parts);
   }
 };
 
@@ -4431,7 +4461,7 @@ app.post('/api/public/feedback', async (req, res) => {
   try {
     const token = getBearerToken(req);
     const authUser = token ? await getAuthenticatedUser(token) : null;
-    if (authUser) upsertUserProfile(authUser);
+    if (authUser) upsertUserProfile(authUser, getRequestTimezone(req));
     const user = authUser ? sanitizeUser(authUser) : null;
 
     const rawScore = Number(req.body?.score);
@@ -4506,7 +4536,7 @@ app.get('/api/streak/me', async (req, res) => {
 
   try {
     const row = await loadStreakRow(req.user.id);
-    res.json({ streak: serializeStreak(row || { user_id: req.user.id }) });
+    res.json({ streak: serializeStreak(row || { user_id: req.user.id, timezone: getRequestTimezone(req) }) });
   } catch (error) {
     if (isMissingTableError(error, STREAK_TABLE)) {
       return res.json({ streak: serializeStreak(), missingTable: true });
@@ -4523,11 +4553,13 @@ app.post('/api/streak/check-in', async (req, res) => {
     const metadata = req.body?.metadata && typeof req.body.metadata === 'object' && !Array.isArray(req.body.metadata)
       ? req.body.metadata
       : {};
+    const timezone = getRequestTimezone(req);
     const result = await recordStreakCheckIn(req.user, {
       source: cleanSupportText(metadata.source || 'site_open', 80),
       pagePath: cleanSupportText(metadata.pagePath || metadata.page_path || '', 240),
+      timezone,
       userAgent: cleanSupportText(req.headers['user-agent'], 500),
-    });
+    }, timezone);
     res.status(201).json(result);
   } catch (error) {
     if (isMissingTableError(error, STREAK_TABLE)) {
@@ -4574,7 +4606,7 @@ app.get('/api/auth/me', async (req, res) => {
   }
 
   try {
-    streak = serializeStreak(await loadStreakRow(req.user.id) || { user_id: req.user.id });
+    streak = serializeStreak(await loadStreakRow(req.user.id) || { user_id: req.user.id, timezone: getRequestTimezone(req) });
   } catch (error) {
     if (!isMissingTableError(error, STREAK_TABLE)) logDbError(`auth streak:${req.user.id}`, error);
   }
@@ -4982,7 +5014,7 @@ app.get('/api/support/admin/insights', async (req, res) => {
   };
 
   try {
-    const [overviewRows, ticketRows, feedbackRows, activityTodayRows, activityRecentRows] = await Promise.all([
+    const [overviewRows, ticketRows, feedbackRows, activityTodayRows, activityRecentRows, streakRows] = await Promise.all([
       safeSelect('admin overview', dbFrom('forexanalyzer_client_overview')
         .select('*')
         .order('snapshot_updated_at', { ascending: false })
@@ -5006,6 +5038,9 @@ app.get('/api/support/admin/insights', async (req, res) => {
         .eq('event_type', 'page_view')
         .order('created_at', { ascending: false })
         .limit(2000)),
+      safeSelect('admin streak stats', dbFrom(STREAK_TABLE)
+        .select('user_id,current_streak,longest_streak,last_active_date,last_seen_at,timezone,status,monthly_restore_period,monthly_restore_count,total_restores_used,restore_limit,milestones_sent')
+        .limit(1000)),
     ]);
 
     const userIds = new Set();
@@ -5013,6 +5048,7 @@ app.get('/api/support/admin/insights', async (req, res) => {
     for (const row of ticketRows) if (row.user_id) userIds.add(row.user_id);
     for (const row of feedbackRows) if (row.user_id) userIds.add(row.user_id);
     for (const row of activityRecentRows) if (row.user_id) userIds.add(row.user_id);
+    for (const row of streakRows) if (row.user_id) userIds.add(row.user_id);
 
     let profiles = new Map();
     try {
@@ -5033,6 +5069,11 @@ app.get('/api/support/admin/insights', async (req, res) => {
         list.push(next);
         accountsByUser.set(row.user_id, list);
       }
+    }
+
+    const streakByUser = new Map();
+    for (const row of streakRows) {
+      if (row.user_id) streakByUser.set(row.user_id, row);
     }
 
     const ticketStatsByUser = new Map();
@@ -5097,6 +5138,7 @@ app.get('/api/support/admin/insights', async (req, res) => {
         tickets: ticketStatsByUser.get(userId) || {},
         feedback: feedbackStatsByUser.get(userId) || {},
         accounts: accountsByUser.get(userId) || [],
+        streak: streakByUser.get(userId) || { user_id: userId, timezone: profiles.get(userId)?.timezone || CONFIG.STREAK_TIMEZONE },
       });
     }).sort((a, b) => {
       const bSeen = b.lastSeenAt ? new Date(b.lastSeenAt).getTime() : 0;
@@ -5105,6 +5147,8 @@ app.get('/api/support/admin/insights', async (req, res) => {
     });
 
     const accounts = users.flatMap(user => user.accounts.map(account => ({ ...account, userId: user.userId, userName: user.name, userEmail: user.email })));
+    const liveAccountRows = accounts.filter(account => account.environment === 'live');
+    const demoAccountRows = accounts.filter(account => account.environment === 'demo');
     const activeTodayUsers = new Set(activityTodayRows.map(row => row.user_id).filter(Boolean));
     const activeLastHourUsers = new Set(activityTodayRows
       .filter(row => row.user_id && row.created_at >= oneHourAgo)
@@ -5128,11 +5172,15 @@ app.get('/api/support/admin/insights', async (req, res) => {
         pageViewsToday: activityTodayRows.length,
         mostUsedPage: pageUsage[0]?.path || '',
         connectedAccounts: accounts.length,
-        liveAccounts: accounts.filter(account => account.environment === 'live').length,
-        demoAccounts: accounts.filter(account => account.environment === 'demo').length,
+        liveAccounts: liveAccountRows.length,
+        demoAccounts: demoAccountRows.length,
         onlineAccounts: accounts.filter(account => account.online).length,
         totalTrackedBalance: accounts.reduce((sum, account) => sum + (Number(account.balance) || 0), 0),
         totalTrackedEquity: accounts.reduce((sum, account) => sum + (Number(account.equity) || 0), 0),
+        liveTrackedBalance: liveAccountRows.reduce((sum, account) => sum + (Number(account.balance) || 0), 0),
+        demoTrackedBalance: demoAccountRows.reduce((sum, account) => sum + (Number(account.balance) || 0), 0),
+        liveTrackedEquity: liveAccountRows.reduce((sum, account) => sum + (Number(account.equity) || 0), 0),
+        demoTrackedEquity: demoAccountRows.reduce((sum, account) => sum + (Number(account.equity) || 0), 0),
         openTickets: ticketTotals.open + ticketTotals.pending,
         urgentTickets: ticketTotals.urgent,
         feedbackCount: feedbackRows.length,

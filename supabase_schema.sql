@@ -46,11 +46,13 @@ create table if not exists public.tradevault_user_profiles (
   full_name text,
   avatar_url text,
   nickname text,
+  timezone text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 alter table public.tradevault_user_profiles
+  add column if not exists timezone text,
   add column if not exists created_at timestamptz not null default now(),
   add column if not exists updated_at timestamptz not null default now();
 
@@ -256,6 +258,7 @@ create table if not exists public.tradevault_user_streaks (
   longest_streak integer not null default 0,
   last_active_date date,
   last_seen_at timestamptz,
+  timezone text,
   status text not null default 'inactive',
   monthly_restore_period text,
   monthly_restore_count integer not null default 0,
@@ -271,6 +274,7 @@ alter table public.tradevault_user_streaks
   add column if not exists longest_streak integer not null default 0,
   add column if not exists last_active_date date,
   add column if not exists last_seen_at timestamptz,
+  add column if not exists timezone text,
   add column if not exists status text not null default 'inactive',
   add column if not exists monthly_restore_period text,
   add column if not exists monthly_restore_count integer not null default 0,
@@ -396,6 +400,9 @@ alter table public.tradevault_referral_codes enable row level security;
 alter table public.tradevault_referrals enable row level security;
 alter table public.tradevault_feedback_responses enable row level security;
 alter table public.tradevault_user_activity_events enable row level security;
+alter table public.tradevault_user_streaks enable row level security;
+alter table public.tradevault_streak_events enable row level security;
+alter table public.tradevault_email_logs enable row level security;
 alter table public.tradevault_support_agents enable row level security;
 alter table public.tradevault_support_tickets enable row level security;
 alter table public.tradevault_support_messages enable row level security;
@@ -467,6 +474,60 @@ create policy activity_events_select_own_or_agent
   using (
     auth.uid() = user_id
     or exists (
+      select 1 from public.tradevault_support_agents a
+      where a.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists user_streaks_select_own_or_agent on public.tradevault_user_streaks;
+create policy user_streaks_select_own_or_agent
+  on public.tradevault_user_streaks
+  for select
+  using (
+    auth.uid() = user_id
+    or exists (
+      select 1 from public.tradevault_support_agents a
+      where a.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists user_streaks_insert_own on public.tradevault_user_streaks;
+create policy user_streaks_insert_own
+  on public.tradevault_user_streaks
+  for insert
+  with check (auth.uid() = user_id);
+
+drop policy if exists user_streaks_update_own on public.tradevault_user_streaks;
+create policy user_streaks_update_own
+  on public.tradevault_user_streaks
+  for update
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+drop policy if exists streak_events_select_own_or_agent on public.tradevault_streak_events;
+create policy streak_events_select_own_or_agent
+  on public.tradevault_streak_events
+  for select
+  using (
+    auth.uid() = user_id
+    or exists (
+      select 1 from public.tradevault_support_agents a
+      where a.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists streak_events_insert_own on public.tradevault_streak_events;
+create policy streak_events_insert_own
+  on public.tradevault_streak_events
+  for insert
+  with check (auth.uid() = user_id);
+
+drop policy if exists email_logs_select_agent on public.tradevault_email_logs;
+create policy email_logs_select_agent
+  on public.tradevault_email_logs
+  for select
+  using (
+    exists (
       select 1 from public.tradevault_support_agents a
       where a.user_id = auth.uid()
     )
