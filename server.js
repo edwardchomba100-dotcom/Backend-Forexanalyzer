@@ -187,6 +187,31 @@ class SupabaseRestQuery {
     return this;
   }
 
+  neq(column, value) {
+    this.params.set(column, `neq.${encodeFilterValue(value)}`);
+    return this;
+  }
+
+  gt(column, value) {
+    this.params.set(column, `gt.${encodeFilterValue(value)}`);
+    return this;
+  }
+
+  gte(column, value) {
+    this.params.set(column, `gte.${encodeFilterValue(value)}`);
+    return this;
+  }
+
+  lt(column, value) {
+    this.params.set(column, `lt.${encodeFilterValue(value)}`);
+    return this;
+  }
+
+  lte(column, value) {
+    this.params.set(column, `lte.${encodeFilterValue(value)}`);
+    return this;
+  }
+
   is(column, value) {
     this.params.set(column, `is.${encodeFilterValue(value)}`);
     return this;
@@ -4256,19 +4281,22 @@ app.get('/api/support/admin/insights', async (req, res) => {
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const warnings = [];
 
   const safeSelect = async (label, query, fallback = []) => {
-    const { data, error } = await query;
-    if (error) {
-      const missing = error.code === '42P01'
-        || /does not exist|schema cache|tradevault_user_activity_events|forexanalyzer_client_overview/i.test(error.message || '');
-      if (missing) {
-        logDbError(`${label} missing`, error);
+    try {
+      const { data, error } = await query;
+      if (error) {
+        warnings.push(`${label}: ${error.message || 'query failed'}`);
+        logDbError(label, error);
         return fallback;
       }
-      throw error;
+      return data || fallback;
+    } catch (error) {
+      warnings.push(`${label}: ${error.message || 'query failed'}`);
+      logDbError(label, error);
+      return fallback;
     }
-    return data || fallback;
   };
 
   try {
@@ -4304,7 +4332,13 @@ app.get('/api/support/admin/insights', async (req, res) => {
     for (const row of feedbackRows) if (row.user_id) userIds.add(row.user_id);
     for (const row of activityRecentRows) if (row.user_id) userIds.add(row.user_id);
 
-    const profiles = await loadSupportProfiles([...userIds]);
+    let profiles = new Map();
+    try {
+      profiles = await loadSupportProfiles([...userIds]);
+    } catch (error) {
+      warnings.push(`profiles: ${error.message || 'could not load profiles'}`);
+      logDbError('admin insight profiles', error);
+    }
     const accountsByUser = new Map();
     const licenseByUser = new Map();
 
@@ -4426,6 +4460,7 @@ app.get('/api/support/admin/insights', async (req, res) => {
       },
       pageUsage,
       ticketTotals,
+      warnings,
       users,
       accounts,
       recentFeedback: feedbackRows.slice(0, 20).map(row => ({
