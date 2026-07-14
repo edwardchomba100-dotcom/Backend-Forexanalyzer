@@ -378,6 +378,7 @@ const CONFIG = {
   STREAK_ADVANCED_RESTORES:  +(process.env.STREAK_ADVANCED_RESTORES || 5),
   STREAK_ADVANCED_DAYS:      +(process.env.STREAK_ADVANCED_DAYS || 30),
   STREAK_REMINDER_HOUR:      +(process.env.STREAK_REMINDER_HOUR || 20),
+  STREAK_REQUIRED_ACTIVE_MS:  +(process.env.STREAK_REQUIRED_ACTIVE_MS || 3 * 60 * 1000),
   RETENTION_EMAILS_ENABLED:  process.env.RETENTION_EMAILS_ENABLED !== 'false',
   RETENTION_JOB_INTERVAL_MS: +(process.env.RETENTION_JOB_INTERVAL_MS || 30 * 60 * 1000),
   RETENTION_INITIAL_NO_ACCOUNT_BLAST: process.env.RETENTION_INITIAL_NO_ACCOUNT_BLAST !== 'false',
@@ -2380,6 +2381,9 @@ const serializeStreak = (row = {}, extra = {}) => {
   const marketDay = isMarketDateYmd(parts.ymd);
   const active = marketDay && lastActiveDate === parts.ymd;
   const nextMilestone = STREAK_MILESTONES.find(milestone => currentStreak < milestone) || null;
+  const requiredActiveMs = Math.max(0, Number(firstValue(extra.requiredActiveMs, CONFIG.STREAK_REQUIRED_ACTIVE_MS)) || 0);
+  const activeSessionMs = Math.max(0, Number(firstValue(extra.activeSessionMs, extra.activeMs, 0)) || 0);
+  const activationProgress = requiredActiveMs > 0 ? Math.min(1, activeSessionMs / requiredActiveMs) : 1;
 
   return {
     currentStreak,
@@ -2387,6 +2391,10 @@ const serializeStreak = (row = {}, extra = {}) => {
     active,
     fireState: active ? 'burning' : 'dull',
     status: row.status || (active ? 'active' : 'inactive'),
+    activationPending: !active && row.status === 'pending',
+    requiredActiveMs,
+    activeSessionMs,
+    activationProgress,
     today: parts.ymd,
     timezone: parts.timezone,
     marketDay,
@@ -2433,6 +2441,16 @@ const recordStreakCheckIn = async (user, metadata = {}, timezone = CONFIG.STREAK
 
   const parts = getBusinessDateParts(new Date(), timezone);
   const nowIso = new Date().toISOString();
+  const source = cleanSupportText(metadata.source || 'site_open', 80);
+  const requiredActiveMs = Math.max(0, Number(CONFIG.STREAK_REQUIRED_ACTIVE_MS) || 0);
+  const activeSessionMs = Math.max(0, Number(firstValue(
+    metadata.activeSessionMs,
+    metadata.activeMs,
+    metadata.durationMs,
+    metadata.engagedMs,
+    0,
+  )) || 0);
+  const meetsEngagementRequirement = activeSessionMs >= requiredActiveMs;
   const existing = await loadStreakRow(user.id);
   const row = existing || {
     user_id: user.id,
@@ -2470,6 +2488,8 @@ const recordStreakCheckIn = async (user, metadata = {}, timezone = CONFIG.STREAK
     status = currentStreak > 0 ? 'weekend_pause' : 'inactive';
   } else if (lastActiveDate === parts.ymd) {
     status = 'active';
+  } else if (!meetsEngagementRequirement) {
+    status = 'pending';
   } else {
     const previousStreak = currentStreak;
     const missedMarketDays = lastActiveDate ? countMissedMarketDays(lastActiveDate, parts.ymd) : 0;
@@ -2533,12 +2553,18 @@ const recordStreakCheckIn = async (user, metadata = {}, timezone = CONFIG.STREAK
 
   await recordStreakEvent({
     userId: user.id,
-    eventType: !isMarketDateYmd(parts.ymd) ? 'weekend_visit' : lost ? 'streak_lost' : restored ? 'streak_restored' : 'check_in',
+    eventType: !isMarketDateYmd(parts.ymd) ? 'weekend_visit' : status === 'pending' ? 'streak_pending' : lost ? 'streak_lost' : restored ? 'streak_restored' : 'check_in',
     activityDate: parts.ymd,
     streakCount: currentStreak,
     usedRestore: restored,
     restoresUsed,
-    metadata,
+    metadata: {
+      ...metadata,
+      source,
+      activeSessionMs,
+      requiredActiveMs,
+      activationProgress: requiredActiveMs > 0 ? Math.min(1, activeSessionMs / requiredActiveMs) : 1,
+    },
   }).catch(err => logDbError(`streak event:${user.id}`, err));
 
   return {
@@ -2547,6 +2573,10 @@ const recordStreakCheckIn = async (user, metadata = {}, timezone = CONFIG.STREAK
       lost,
       restoresUsed,
       milestoneAchieved,
+      activeSessionMs,
+      requiredActiveMs,
+      activationPending: status === 'pending',
+      activationProgress: requiredActiveMs > 0 ? Math.min(1, activeSessionMs / requiredActiveMs) : 1,
     }),
   };
 };
@@ -4557,6 +4587,7 @@ app.post('/api/streak/check-in', async (req, res) => {
     const result = await recordStreakCheckIn(req.user, {
       source: cleanSupportText(metadata.source || 'site_open', 80),
       pagePath: cleanSupportText(metadata.pagePath || metadata.page_path || '', 240),
+      activeSessionMs: Math.max(0, Number(firstValue(metadata.activeSessionMs, metadata.activeMs, metadata.durationMs, 0)) || 0),
       timezone,
       userAgent: cleanSupportText(req.headers['user-agent'], 500),
     }, timezone);
