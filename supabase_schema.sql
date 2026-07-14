@@ -384,6 +384,41 @@ create index if not exists tradevault_support_tickets_status_priority_idx
 create index if not exists tradevault_support_messages_ticket_idx
   on public.tradevault_support_messages (ticket_id, created_at asc);
 
+create table if not exists public.tradevault_support_ticket_rollups (
+  id uuid primary key default gen_random_uuid(),
+  ticket_id uuid,
+  user_id uuid,
+  account_id text,
+  category text,
+  priority text,
+  status text not null default 'closed',
+  message_count integer not null default 0,
+  created_at timestamptz,
+  last_message_at timestamptz,
+  archived_at timestamptz not null default now()
+);
+
+alter table public.tradevault_support_ticket_rollups
+  add column if not exists ticket_id uuid,
+  add column if not exists user_id uuid,
+  add column if not exists account_id text,
+  add column if not exists category text,
+  add column if not exists priority text,
+  add column if not exists status text not null default 'closed',
+  add column if not exists message_count integer not null default 0,
+  add column if not exists created_at timestamptz,
+  add column if not exists last_message_at timestamptz,
+  add column if not exists archived_at timestamptz not null default now();
+
+create unique index if not exists tradevault_support_ticket_rollups_ticket_idx
+  on public.tradevault_support_ticket_rollups (ticket_id);
+
+create index if not exists tradevault_support_ticket_rollups_status_archived_idx
+  on public.tradevault_support_ticket_rollups (status, archived_at desc);
+
+create index if not exists tradevault_support_ticket_rollups_user_archived_idx
+  on public.tradevault_support_ticket_rollups (user_id, archived_at desc);
+
 alter table public.tradevault_kv_store enable row level security;
 alter table public.tradevault_account_settings enable row level security;
 alter table public.tradevault_account_alerts enable row level security;
@@ -406,6 +441,7 @@ alter table public.tradevault_email_logs enable row level security;
 alter table public.tradevault_support_agents enable row level security;
 alter table public.tradevault_support_tickets enable row level security;
 alter table public.tradevault_support_messages enable row level security;
+alter table public.tradevault_support_ticket_rollups enable row level security;
 
 drop policy if exists trial_identity_claims_select_own_or_agent on public.tradevault_trial_identity_claims;
 create policy trial_identity_claims_select_own_or_agent
@@ -596,6 +632,17 @@ create policy support_messages_insert_own_or_agent
         and t.user_id = auth.uid()
     )
     or exists (
+      select 1 from public.tradevault_support_agents a
+      where a.user_id = auth.uid()
+    )
+  );
+
+drop policy if exists support_ticket_rollups_select_agent on public.tradevault_support_ticket_rollups;
+create policy support_ticket_rollups_select_agent
+  on public.tradevault_support_ticket_rollups
+  for select
+  using (
+    exists (
       select 1 from public.tradevault_support_agents a
       where a.user_id = auth.uid()
     )

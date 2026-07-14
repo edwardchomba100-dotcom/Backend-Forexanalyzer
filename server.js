@@ -384,6 +384,9 @@ const CONFIG = {
   RETENTION_INITIAL_NO_ACCOUNT_BLAST: process.env.RETENTION_INITIAL_NO_ACCOUNT_BLAST !== 'false',
   NO_ACCOUNT_HELP_HOURS:     +(process.env.NO_ACCOUNT_HELP_HOURS || 3),
   MISS_YOU_AFTER_DAYS:       +(process.env.MISS_YOU_AFTER_DAYS || 7),
+  SUPPORT_RETENTION_ENABLED: process.env.SUPPORT_RETENTION_ENABLED !== 'false',
+  SUPPORT_CONVERSATION_RETENTION_DAYS: +(process.env.SUPPORT_CONVERSATION_RETENTION_DAYS || 90),
+  SUPPORT_RETENTION_DELETE_LIMIT: +(process.env.SUPPORT_RETENTION_DELETE_LIMIT || 200),
 
   METAAPI_TOKEN:             process.env.METAAPI_TOKEN || '',
   METAAPI_PROVISIONING_URL:  (process.env.METAAPI_PROVISIONING_URL || 'https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai').replace(/\/+$/, ''),
@@ -1765,6 +1768,7 @@ const serializeShareLink = (row) => ({
 const SUPPORT_TICKET_TABLE = 'tradevault_support_tickets';
 const SUPPORT_MESSAGE_TABLE = 'tradevault_support_messages';
 const SUPPORT_AGENT_TABLE = 'tradevault_support_agents';
+const SUPPORT_TICKET_ROLLUP_TABLE = 'tradevault_support_ticket_rollups';
 const REFERRAL_CODE_TABLE = 'tradevault_referral_codes';
 const REFERRAL_TABLE = 'tradevault_referrals';
 const FEEDBACK_TABLE = 'tradevault_feedback_responses';
@@ -2838,13 +2842,106 @@ const runMissYouEmails = async () => {
   }
 };
 
+const loadRetentionTicketsByStatus = async (status, cutoffIso, limit) => {
+  const { data, error } = await dbFrom(SUPPORT_TICKET_TABLE)
+    .select('id,user_id,account_id,category,priority,status,last_message_at,created_at,updated_at')
+    .eq('status', status)
+    .lte('updated_at', cutoffIso)
+    .order('updated_at', { ascending: true })
+    .limit(limit);
+  if (error) {
+    if (isMissingTableError(error, SUPPORT_TICKET_TABLE)) return [];
+    throw error;
+  }
+  return data || [];
+};
+
+const countSupportMessages = async (ticketId) => {
+  const { data, error } = await dbFrom(SUPPORT_MESSAGE_TABLE)
+    .select('id')
+    .eq('ticket_id', ticketId)
+    .limit(5000);
+  if (error) {
+    if (isMissingTableError(error, SUPPORT_MESSAGE_TABLE)) return 0;
+    throw error;
+  }
+  return data?.length || 0;
+};
+
+const archiveAndDeleteSupportTicket = async (ticket) => {
+  const messageCount = await countSupportMessages(ticket.id);
+  const { error: rollupError } = await dbFrom(SUPPORT_TICKET_ROLLUP_TABLE).upsert({
+    ticket_id: ticket.id,
+    user_id: ticket.user_id || null,
+    account_id: ticket.account_id || null,
+    category: ticket.category || 'general',
+    priority: ticket.priority || 'normal',
+    status: ticket.status || 'closed',
+    message_count: messageCount,
+    created_at: ticket.created_at || null,
+    last_message_at: ticket.last_message_at || ticket.updated_at || null,
+    archived_at: new Date().toISOString(),
+  }, { onConflict: 'ticket_id' });
+  if (rollupError) throw rollupError;
+
+  const messageDelete = await dbFrom(SUPPORT_MESSAGE_TABLE)
+    .delete()
+    .eq('ticket_id', ticket.id);
+  if (messageDelete.error && !isMissingTableError(messageDelete.error, SUPPORT_MESSAGE_TABLE)) {
+    throw messageDelete.error;
+  }
+
+  const ticketDelete = await dbFrom(SUPPORT_TICKET_TABLE)
+    .delete()
+    .eq('id', ticket.id);
+  if (ticketDelete.error) throw ticketDelete.error;
+
+  return { messageCount };
+};
+
+const runSupportConversationRetention = async () => {
+  if (!CONFIG.SUPPORT_RETENTION_ENABLED) return { archived: 0, messages: 0 };
+
+  const retentionDays = Math.max(1, Number(CONFIG.SUPPORT_CONVERSATION_RETENTION_DAYS) || 90);
+  const limit = Math.max(1, Math.min(Number(CONFIG.SUPPORT_RETENTION_DELETE_LIMIT) || 200, 1000));
+  const cutoffIso = new Date(Date.now() - retentionDays * DAY_MS).toISOString();
+  const rows = [
+    ...(await loadRetentionTicketsByStatus('resolved', cutoffIso, limit)),
+    ...(await loadRetentionTicketsByStatus('closed', cutoffIso, limit)),
+  ].slice(0, limit);
+
+  let archived = 0;
+  let messages = 0;
+  for (const ticket of rows) {
+    try {
+      const result = await archiveAndDeleteSupportTicket(ticket);
+      archived += 1;
+      messages += result.messageCount || 0;
+    } catch (error) {
+      if (isMissingTableError(error, SUPPORT_TICKET_ROLLUP_TABLE)) {
+        console.warn('[Retention] Support rollup table missing. Run latest supabase_schema.sql before conversation cleanup.');
+        return { archived, messages };
+      }
+      logDbError(`support retention:${ticket.id}`, error);
+    }
+  }
+
+  if (archived) {
+    console.log(`[Retention] Archived ${archived} solved support ticket(s) and removed ${messages} message row(s).`);
+  }
+  return { archived, messages };
+};
+
 const runRetentionEmailJobs = async (reason = 'interval') => {
-  if (!supabase || !CONFIG.RETENTION_EMAILS_ENABLED || g_retentionJobRunning) return;
+  if (!supabase || (!CONFIG.RETENTION_EMAILS_ENABLED && !CONFIG.SUPPORT_RETENTION_ENABLED) || g_retentionJobRunning) return;
   g_retentionJobRunning = true;
   try {
-    await runNoAccountHelpEmails({ initialBlast: CONFIG.RETENTION_INITIAL_NO_ACCOUNT_BLAST });
-    await runStreakReminderEmails();
-    await runMissYouEmails();
+    if (CONFIG.RETENTION_EMAILS_ENABLED) {
+      await runNoAccountHelpEmails({ initialBlast: CONFIG.RETENTION_INITIAL_NO_ACCOUNT_BLAST });
+      await runStreakReminderEmails();
+      await runMissYouEmails();
+    }
+    await runSupportConversationRetention();
   } catch (error) {
     logDbError(`retention jobs:${reason}`, error);
   } finally {
@@ -2853,11 +2950,11 @@ const runRetentionEmailJobs = async (reason = 'interval') => {
 };
 
 const startRetentionEmailJobs = () => {
-  if (!supabase || !CONFIG.RETENTION_EMAILS_ENABLED) return;
+  if (!supabase || (!CONFIG.RETENTION_EMAILS_ENABLED && !CONFIG.SUPPORT_RETENTION_ENABLED)) return;
   const intervalMs = Math.max(5 * 60 * 1000, CONFIG.RETENTION_JOB_INTERVAL_MS);
   setTimeout(() => runRetentionEmailJobs('startup'), 90 * 1000);
   setInterval(() => runRetentionEmailJobs('interval'), intervalMs);
-  console.log(`[Retention] Email jobs enabled. Interval: ${Math.round(intervalMs / 60000)} minute(s).`);
+  console.log(`[Retention] Jobs enabled. Interval: ${Math.round(intervalMs / 60000)} minute(s).`);
 };
 
 const cleanReferralCode = (value) =>
@@ -5045,7 +5142,7 @@ app.get('/api/support/admin/insights', async (req, res) => {
   };
 
   try {
-    const [overviewRows, ticketRows, feedbackRows, activityTodayRows, activityRecentRows, streakRows] = await Promise.all([
+    const [overviewRows, ticketRows, rollupRows, feedbackRows, activityTodayRows, activityRecentRows, streakRows] = await Promise.all([
       safeSelect('admin overview', dbFrom('forexanalyzer_client_overview')
         .select('*')
         .order('snapshot_updated_at', { ascending: false })
@@ -5054,6 +5151,10 @@ app.get('/api/support/admin/insights', async (req, res) => {
         .select('id,user_id,status,priority,category,last_message_at,created_at,updated_at')
         .order('last_message_at', { ascending: false })
         .limit(1000)),
+      safeSelect('admin archived ticket stats', dbFrom(SUPPORT_TICKET_ROLLUP_TABLE)
+        .select('status,priority,category,message_count,archived_at')
+        .order('archived_at', { ascending: false })
+        .limit(5000)),
       safeSelect('admin feedback stats', dbFrom(FEEDBACK_TABLE)
         .select('id,user_id,email,page_path,score,responses,created_at')
         .order('created_at', { ascending: false })
@@ -5118,6 +5219,21 @@ app.get('/api/support/admin/insights', async (req, res) => {
       if (stats[status] !== undefined) stats[status] += 1;
       ticketStatsByUser.set(row.user_id, stats);
     }
+    const archivedTicketTotals = { total: 0, resolved: 0, closed: 0, urgent: 0, messages: 0 };
+    for (const row of rollupRows) {
+      archivedTicketTotals.total += 1;
+      if (archivedTicketTotals[row.status] !== undefined) archivedTicketTotals[row.status] += 1;
+      if (row.priority === 'urgent') archivedTicketTotals.urgent += 1;
+      archivedTicketTotals.messages += Number(row.message_count || 0);
+    }
+    const solvedTicketCount =
+      ticketTotals.resolved +
+      ticketTotals.closed +
+      archivedTicketTotals.resolved +
+      archivedTicketTotals.closed;
+    ticketTotals.archived = archivedTicketTotals.total;
+    ticketTotals.archivedMessages = archivedTicketTotals.messages;
+    ticketTotals.historicalSolved = solvedTicketCount;
 
     const feedbackStatsByUser = new Map();
     const feedbackScores = [];
@@ -5214,6 +5330,9 @@ app.get('/api/support/admin/insights', async (req, res) => {
         demoTrackedEquity: demoAccountRows.reduce((sum, account) => sum + (Number(account.equity) || 0), 0),
         openTickets: ticketTotals.open + ticketTotals.pending,
         urgentTickets: ticketTotals.urgent,
+        solvedTickets: solvedTicketCount,
+        archivedTickets: archivedTicketTotals.total,
+        archivedSupportMessages: archivedTicketTotals.messages,
         feedbackCount: feedbackRows.length,
         averageFeedbackScore: feedbackScores.length
           ? feedbackScores.reduce((sum, score) => sum + score, 0) / feedbackScores.length
