@@ -187,6 +187,15 @@ class SupabaseRestQuery {
     return this;
   }
 
+  in(column, values = []) {
+    const items = [...new Set((Array.isArray(values) ? values : [values])
+      .filter((value) => value !== undefined && value !== null)
+      .map((value) => String(value).replace(/"/g, '\\"')))];
+    if (!items.length) return this;
+    this.params.set(column, `in.(${items.map((value) => `"${value}"`).join(',')})`);
+    return this;
+  }
+
   neq(column, value) {
     this.params.set(column, `neq.${encodeFilterValue(value)}`);
     return this;
@@ -272,6 +281,13 @@ class SupabaseRestQuery {
     });
 
     const text = await res.text();
+    recordSupabaseEgress({
+      table: this.table,
+      method: this.method,
+      status: res.status,
+      columns: this.selectColumns,
+      bytes: Buffer.byteLength(text || '', 'utf8'),
+    });
     let payload = null;
     if (text) {
       try { payload = JSON.parse(text); } catch { payload = text; }
@@ -337,6 +353,8 @@ const CONFIG = {
   EQUITY_HISTORY_FILE:    path.join(__dirname, 'data', 'equity_history.json'),
   INSIGHTS_FILE:          path.join(__dirname, 'data', 'insights.json'),
   ACCOUNTS_FILE:          path.join(__dirname, 'data', 'accounts.json'),
+  ACCOUNT_SNAPSHOT_CACHE_FILE: path.join(__dirname, 'data', '.account_snapshots.json'),
+  ADMIN_INSIGHTS_CACHE_FILE:   path.join(__dirname, 'data', '.admin_insights_cache.json'),
   COPY_PAIRS_FILE:        path.join(__dirname, 'data', 'copy_pairs.json'),
   NEWS_FILE:              path.join(__dirname, 'data', 'news_events.json'),
   COMMAND_LOG_FILE:       path.join(__dirname, 'data', 'command_log.json'),
@@ -394,6 +412,19 @@ const CONFIG = {
   METAAPI_SYNC_INTERVAL_MS:  +(process.env.METAAPI_SYNC_INTERVAL_MS || 15000),
   METAAPI_HISTORY_DAYS:      +(process.env.METAAPI_HISTORY_DAYS || 180),
   METAAPI_HISTORY_LIMIT:     +(process.env.METAAPI_HISTORY_LIMIT || 1000),
+
+  SUPABASE_EGRESS_LOG_ENABLED: process.env.SUPABASE_EGRESS_LOG_ENABLED !== 'false',
+  SUPABASE_EGRESS_LOG_MIN_BYTES: +(process.env.SUPABASE_EGRESS_LOG_MIN_BYTES || 64 * 1024),
+  ADMIN_INSIGHTS_CACHE_MS:    +(process.env.ADMIN_INSIGHTS_CACHE_MS || 5 * 60 * 1000),
+  AUTH_ME_CACHE_MS:           +(process.env.AUTH_ME_CACHE_MS || 60 * 1000),
+  SUPPORT_AGENT_CACHE_MS:     +(process.env.SUPPORT_AGENT_CACHE_MS || 5 * 60 * 1000),
+  SUPPORT_PROFILE_CACHE_MS:   +(process.env.SUPPORT_PROFILE_CACHE_MS || 5 * 60 * 1000),
+  SNAPSHOT_HYDRATE_LIMIT:     +(process.env.SNAPSHOT_HYDRATE_LIMIT || 100),
+  SUPABASE_STARTUP_SNAPSHOT_HYDRATE: process.env.SUPABASE_STARTUP_SNAPSHOT_HYDRATE === 'true',
+  USER_ACCOUNT_RESTORE_LIMIT: +(process.env.USER_ACCOUNT_RESTORE_LIMIT || 20),
+  USER_ACCOUNT_RESTORE_CACHE_MS: +(process.env.USER_ACCOUNT_RESTORE_CACHE_MS || 2 * 60 * 1000),
+  LOCAL_SNAPSHOT_WRITE_INTERVAL_MS: +(process.env.LOCAL_SNAPSHOT_WRITE_INTERVAL_MS || process.env.LOCAL_SNAPSHOT_WRITE_DEBOUNCE_MS || 3000),
+  ADMIN_INSIGHTS_WEEKLY_CACHE: process.env.ADMIN_INSIGHTS_WEEKLY_CACHE !== 'false',
 };
 
 const DATABASE_ENABLED = !!(CONFIG.SUPABASE_URL && CONFIG.SUPABASE_SERVICE_ROLE_KEY);
@@ -409,6 +440,7 @@ const g_settingsMeta            = new Map();
 const g_alertsCache             = new Map();
 const g_alertsMeta              = new Map();
 const g_snapshotPersistTimers   = new Map();
+const g_localSnapshotPersistTimers = new Map();
 const g_accountOwners           = new Map();
 const g_eaKeyOwners             = new Map();
 const g_authTokenCache          = new Map();
@@ -421,6 +453,13 @@ const g_directAccounts          = new Map();
 const g_directSyncTimers        = new Map();
 const g_directSyncInFlight      = new Set();
 const g_directCreateTransactions= new Map();
+const g_supabaseEgressStats     = new Map();
+const g_supportAgentCache       = new Map();
+const g_supportProfileCache     = new Map();
+const g_authMeCache             = new Map();
+const g_userAccountRestoreCache = new Map();
+const g_adminAccountUpdateTimers = new Map();
+let   g_adminInsightsCache      = null;
 let   g_retentionJobRunning     = false;
 
 const cloneJSON = (value) =>
@@ -430,6 +469,68 @@ const dbFrom = (table) =>
   CONFIG.SUPABASE_SCHEMA && CONFIG.SUPABASE_SCHEMA !== 'public'
     ? supabase.schema(CONFIG.SUPABASE_SCHEMA).from(table)
     : supabase.from(table);
+
+const cacheGet = (cache, key) => {
+  const hit = cache.get(key);
+  if (!hit || hit.expiresAt <= Date.now()) {
+    if (hit) cache.delete(key);
+    return undefined;
+  }
+  return hit.value;
+};
+
+const cacheSet = (cache, key, value, ttlMs) => {
+  cache.set(key, { value, expiresAt: Date.now() + Math.max(0, ttlMs || 0) });
+  return value;
+};
+
+const cacheDelete = (cache, key) => cache.delete(key);
+
+const clearAdminInsightsCache = () => {
+  g_adminInsightsCache = null;
+};
+
+const recordSupabaseEgress = ({ table, method, status, columns, bytes }) => {
+  if (!CONFIG.SUPABASE_EGRESS_LOG_ENABLED || !bytes) return;
+  const key = `${method || 'GET'} ${table || 'unknown'} ${columns || '*'}`;
+  const current = g_supabaseEgressStats.get(key) || {
+    key,
+    table: table || 'unknown',
+    method: method || 'GET',
+    columns: columns || '*',
+    requests: 0,
+    bytes: 0,
+    maxBytes: 0,
+    lastStatus: null,
+    lastAt: null,
+  };
+  current.requests += 1;
+  current.bytes += bytes;
+  current.maxBytes = Math.max(current.maxBytes, bytes);
+  current.lastStatus = status;
+  current.lastAt = new Date().toISOString();
+  g_supabaseEgressStats.set(key, current);
+
+  if (bytes >= CONFIG.SUPABASE_EGRESS_LOG_MIN_BYTES) {
+    console.warn(`[Supabase:Egress] ${key} -> ${(bytes / 1024).toFixed(1)} KB`);
+  }
+};
+
+const getSupabaseEgressSummary = () =>
+  [...g_supabaseEgressStats.values()]
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, 25)
+    .map((row) => ({
+      table: row.table,
+      method: row.method,
+      columns: row.columns,
+      requests: row.requests,
+      bytes: row.bytes,
+      mb: Number((row.bytes / 1024 / 1024).toFixed(3)),
+      maxKb: Number((row.maxBytes / 1024).toFixed(1)),
+      lastStatus: row.lastStatus,
+      lastAt: row.lastAt,
+    }));
 
 const logDbError = (label, err) => {
   const message = err?.message || err?.details || String(err);
@@ -1262,6 +1363,8 @@ initFile(CONFIG.JOURNAL_FILE,         { entries: [] });
 initFile(CONFIG.EQUITY_HISTORY_FILE,  { snapshots: [] });
 initFile(CONFIG.INSIGHTS_FILE,        { generated_at: null, insights: [] });
 initFile(CONFIG.ACCOUNTS_FILE,        { accounts: [] });
+initFile(CONFIG.ACCOUNT_SNAPSHOT_CACHE_FILE, { updated_at: null, accounts: {} });
+initFile(CONFIG.ADMIN_INSIGHTS_CACHE_FILE,   { week_key: null, updated_at: null, payload: null });
 initFile(CONFIG.COPY_PAIRS_FILE,      { pairs: [] });
 initFile(CONFIG.NEWS_FILE,            { events: [] });
 initFile(CONFIG.COMMAND_LOG_FILE,     { commands: [] });
@@ -2049,6 +2152,131 @@ const serializeAdminUserInsight = ({ userId, profile = {}, license = {}, activit
   streak: serializeStreak(streak || { user_id: userId, timezone: profile.timezone || CONFIG.STREAK_TIMEZONE }),
 });
 
+const getAdminInsightsWeekKey = () => {
+  let ymd = getBusinessDateParts(new Date(), CONFIG.STREAK_TIMEZONE).ymd;
+  while (new Date(`${ymd}T00:00:00Z`).getUTCDay() !== 0) {
+    ymd = addDaysYmd(ymd, -1);
+  }
+  return ymd;
+};
+
+const loadAdminInsightsCacheFile = () => {
+  try {
+    const payload = JSON.parse(fs.readFileSync(CONFIG.ADMIN_INSIGHTS_CACHE_FILE, 'utf8'));
+    return payload && typeof payload === 'object' ? payload : {};
+  } catch {
+    return {};
+  }
+};
+
+const saveAdminInsightsCacheFile = (weekKey, payload) => {
+  safeWriteJSONFile(CONFIG.ADMIN_INSIGHTS_CACHE_FILE, {
+    week_key: weekKey,
+    updated_at: new Date().toISOString(),
+    payload: cloneJSON(payload),
+  });
+};
+
+const recomputeAdminInsightMetrics = (payload) => {
+  if (!payload?.metrics) return payload;
+  const accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
+  const liveAccounts = accounts.filter(account => account.environment === 'live');
+  const demoAccounts = accounts.filter(account => account.environment === 'demo');
+  payload.metrics.connectedAccounts = accounts.length;
+  payload.metrics.liveAccounts = liveAccounts.length;
+  payload.metrics.demoAccounts = demoAccounts.length;
+  payload.metrics.onlineAccounts = accounts.filter(account => account.online).length;
+  payload.metrics.totalTrackedBalance = accounts.reduce((sum, account) => sum + (Number(account.balance) || 0), 0);
+  payload.metrics.totalTrackedEquity = accounts.reduce((sum, account) => sum + (Number(account.equity) || 0), 0);
+  payload.metrics.liveTrackedBalance = liveAccounts.reduce((sum, account) => sum + (Number(account.balance) || 0), 0);
+  payload.metrics.demoTrackedBalance = demoAccounts.reduce((sum, account) => sum + (Number(account.balance) || 0), 0);
+  payload.metrics.liveTrackedEquity = liveAccounts.reduce((sum, account) => sum + (Number(account.equity) || 0), 0);
+  payload.metrics.demoTrackedEquity = demoAccounts.reduce((sum, account) => sum + (Number(account.equity) || 0), 0);
+  return payload;
+};
+
+const applyAdminAccountUpdateToCache = (account, userId) => {
+  if (!g_adminInsightsCache?.payload || !account?.accountId) return;
+  const payload = g_adminInsightsCache.payload;
+  const nextAccount = { ...account, userId };
+  const accounts = Array.isArray(payload.accounts) ? payload.accounts.slice() : [];
+  const accountIdx = accounts.findIndex(row => row.accountId === account.accountId);
+  if (accountIdx >= 0) accounts[accountIdx] = { ...accounts[accountIdx], ...nextAccount };
+  else accounts.unshift(nextAccount);
+  payload.accounts = accounts;
+
+  if (userId && Array.isArray(payload.users)) {
+    payload.users = payload.users.map((user) => {
+      if (user.userId !== userId) return user;
+      const userAccounts = Array.isArray(user.accounts) ? user.accounts.slice() : [];
+      const userAccountIdx = userAccounts.findIndex(row => row.accountId === account.accountId);
+      if (userAccountIdx >= 0) userAccounts[userAccountIdx] = { ...userAccounts[userAccountIdx], ...account };
+      else userAccounts.unshift(account);
+      return serializeAdminUserInsight({
+        userId,
+        profile: {
+          email: user.email,
+          full_name: user.name,
+          avatar_url: user.avatar,
+        },
+        license: {
+          plan_mode: user.planMode,
+          license_status: user.licenseStatus,
+          trial_started_at: user.trialStartedAt,
+          trial_ends_at: user.trialEndsAt,
+          grace_ends_at: user.graceEndsAt,
+          paid_until: user.paidUntil,
+        },
+        activity: {
+          lastSeenAt: user.lastSeenAt,
+          pageViewsToday: user.pageViewsToday,
+          mostUsedPage: user.mostUsedPage,
+        },
+        tickets: {
+          open: user.openTickets,
+          pending: user.pendingTickets,
+        },
+        feedback: {
+          count: user.feedbackCount,
+          latestScore: user.latestFeedbackScore,
+        },
+        accounts: userAccounts,
+        streak: user.streak || {},
+      });
+    });
+  }
+
+  payload.generatedAt = new Date().toISOString();
+  recomputeAdminInsightMetrics(payload);
+};
+
+const scheduleAdminAccountUpdate = (state, reason = 'live') => {
+  if (!state?.accountId) return;
+  const accountId = String(state.accountId);
+  if (g_adminAccountUpdateTimers.has(accountId)) return;
+  const delayMs = ['online', 'offline', 'status'].includes(reason) ? 0 : 1500;
+  const timer = setTimeout(() => {
+    g_adminAccountUpdateTimers.delete(accountId);
+    const ownerId = getAccountOwner(accountId);
+    const account = {
+      ...serializeAdminAccountInsight({ account_id: accountId }),
+      userId: ownerId,
+    };
+    applyAdminAccountUpdateToCache(account, ownerId);
+    io.to('support:agents').emit('ADMIN_ACCOUNT_UPDATE', {
+      type: 'ADMIN_ACCOUNT_UPDATE',
+      data: {
+        account,
+        userId: ownerId,
+        accountId,
+        reason,
+        generatedAt: new Date().toISOString(),
+      },
+    });
+  }, delayMs);
+  g_adminAccountUpdateTimers.set(accountId, timer);
+};
+
 const loadSupportTicket = async (ticketId) => {
   const { data, error } = await dbFrom(SUPPORT_TICKET_TABLE)
     .select('id,user_id,account_id,subject,category,priority,status,last_message_at,assigned_to,created_at,updated_at')
@@ -2062,23 +2290,39 @@ const loadSupportMessages = async (ticketId) => {
   const { data, error } = await dbFrom(SUPPORT_MESSAGE_TABLE)
     .select('id,ticket_id,user_id,sender_role,body,attachment_url,created_at')
     .eq('ticket_id', String(ticketId || ''))
-    .order('created_at', { ascending: true });
+    .order('created_at', { ascending: false })
+    .limit(200);
   if (error) throw error;
-  return (data || []).map(serializeSupportMessage);
+  return (data || []).slice().reverse().map(serializeSupportMessage);
 };
 
 const loadSupportProfiles = async (userIds) => {
   const ids = [...new Set((userIds || []).filter(Boolean))];
   if (!ids.length) return new Map();
   const profiles = new Map();
+
+  const missing = [];
   for (const id of ids) {
+    const cached = cacheGet(g_supportProfileCache, id);
+    if (cached) {
+      profiles.set(id, cached);
+    } else {
+      missing.push(id);
+    }
+  }
+
+  for (let i = 0; i < missing.length; i += 100) {
+    const batch = missing.slice(i, i + 100);
     const { data, error } = await dbFrom('tradevault_user_profiles')
       .select('user_id,email,full_name,avatar_url,nickname,timezone')
-      .eq('user_id', id)
-      .maybeSingle();
+      .in('user_id', batch);
     if (error) throw error;
-    if (data) profiles.set(data.user_id, data);
+    for (const row of data || []) {
+      cacheSet(g_supportProfileCache, row.user_id, row, CONFIG.SUPPORT_PROFILE_CACHE_MS);
+      profiles.set(row.user_id, row);
+    }
   }
+
   return profiles;
 };
 
@@ -3084,6 +3328,9 @@ const applyReferralIfPresent = async (referredUser, rawCode) => {
 
 const getSupportAgent = async (userId, email = '', name = '') => {
   if (!userId) return null;
+  const cached = cacheGet(g_supportAgentCache, userId);
+  if (cached !== undefined) return cached;
+
   const configuredAdmin = isConfiguredSupportAdminEmail(email)
     ? {
         user_id: userId,
@@ -3100,10 +3347,12 @@ const getSupportAgent = async (userId, email = '', name = '') => {
     .maybeSingle();
   if (error) {
     const missingTable = error.code === '42P01' || /tradevault_support_agents/i.test(error.message || '');
-    if (missingTable && configuredAdmin) return configuredAdmin;
+    if (missingTable && configuredAdmin) {
+      return cacheSet(g_supportAgentCache, userId, configuredAdmin, CONFIG.SUPPORT_AGENT_CACHE_MS);
+    }
     throw error;
   }
-  return data || configuredAdmin;
+  return cacheSet(g_supportAgentCache, userId, data || configuredAdmin || null, CONFIG.SUPPORT_AGENT_CACHE_MS);
 };
 
 const requireSupportAgent = async (req, res) => {
@@ -3156,6 +3405,7 @@ const touchSupportTicket = async (ticketId, patch = {}) => {
 
 const notifySupportTicket = (type, ticket) => {
   if (!ticket) return;
+  clearAdminInsightsCache();
   io.to(`user:${ticket.user_id}`).emit(type, {
     type,
     data: { ticketId: ticket.id },
@@ -3219,9 +3469,10 @@ io.use(async (socket, next) => {
   return next();
 });
 
-io.on('connection', (socket) => {
+io.on('connection', async (socket) => {
   const userId = socket.user.id;
   socket.join(`user:${userId}`);
+  await restoreUserAccountsFromDatabase(userId, 'socket-init');
   getSupportAgent(userId, socket.user.email, socket.user.name)
     .then(agent => {
       if (agent) socket.join('support:agents');
@@ -3321,6 +3572,7 @@ const startOfflineDetector = (state) => {
       state.online = false;
       scheduleAccountSnapshotPersist(state, 0);
       broadcast('EA_OFFLINE', { accountId: state.accountId }, state.accountId);
+      scheduleAdminAccountUpdate(state, 'offline');
       console.log(`[Account] ${state.accountId} went offline (${(ageMs / 1000).toFixed(0)}s silent)`);
     }
   }, 2000);
@@ -3331,27 +3583,17 @@ const markEaOnline = (state) => {
   if (!state.online) {
     state.online = true;
     broadcast('EA_ONLINE', { accountId: state.accountId }, state.accountId);
+    scheduleAdminAccountUpdate(state, 'online');
     console.log(`[Account] ${state.accountId} came online`);
   }
 };
 
 // ─── EA Router ────────────────────────────────────────────────────────────────
 const persistAccountSnapshotNow = (state) => {
-  if (!state || !supabase) return;
-  const row = {
-    account_id: state.accountId,
-    owner_user_id: getAccountOwner(state.accountId),
-    config: cloneJSON(state.config),
-    raw_live_data: cloneJSON(state.rawLiveData),
-    raw_static_data: cloneJSON(state.rawStaticData),
-    processed_data: cloneJSON(state.processedData),
-    ea_status: cloneJSON(state.eaStatus),
-    push_counts: cloneJSON(state.pushCounts),
-    last_seen_ms: state.lastSeen,
-    last_settings_fetch_ms: state.lastSettingsFetch,
-    last_error: cloneJSON(state.lastError),
-    updated_at: new Date().toISOString(),
-  };
+  if (!state) return;
+  const row = accountSnapshotRowFromState(state);
+  persistLocalAccountSnapshotNow(state, row);
+  if (!supabase) return;
 
   runDbTask(`persist account snapshot:${state.accountId}`, async () => {
     const { error } = await dbFrom('tradevault_account_snapshots')
@@ -3377,6 +3619,193 @@ const buildHistorySignature = (processedData) => {
     return best;
   }, null);
   return `history:${history.length}:${last?.exitTime || 0}:${last?.ticket || ''}|open:${openTickets}`;
+};
+
+const accountSnapshotRowFromState = (state) => ({
+  account_id: state.accountId,
+  owner_user_id: getAccountOwner(state.accountId),
+  config: cloneJSON(state.config),
+  raw_live_data: null,
+  raw_static_data: null,
+  processed_data: cloneJSON(state.processedData),
+  ea_status: cloneJSON(state.eaStatus),
+  push_counts: cloneJSON(state.pushCounts),
+  last_seen_ms: state.lastSeen,
+  last_settings_fetch_ms: state.lastSettingsFetch,
+  last_error: cloneJSON(state.lastError),
+  updated_at: new Date().toISOString(),
+});
+
+const restoreAccountSnapshotRow = (row, fallbackOwnerId = null) => {
+  const accountId = String(row?.account_id || '');
+  if (!accountId) return false;
+  const ownerId = row.owner_user_id || fallbackOwnerId || getAccountOwner(accountId);
+  if ((ownerId && isAccountDeletedForUser(ownerId, accountId)) || isAccountDeletedByAnyUser(accountId)) {
+    return false;
+  }
+
+  if (!g_accounts.has(accountId)) {
+    registerAccount(accountId, row.config || {});
+  }
+  if (ownerId && !g_accountOwners.has(accountId)) {
+    g_accountOwners.set(accountId, ownerId);
+  }
+
+  const state = g_accounts.get(accountId);
+  Object.assign(state.config, row.config || {});
+  state.rawLiveData       = null;
+  state.rawStaticData     = null;
+  state.processedData     = row.processed_data || null;
+  state.eaStatus          = row.ea_status || null;
+  state.pushCounts        = row.push_counts || { live: 0, static: 0, status: 0 };
+  state.lastSeen          = row.last_seen_ms || null;
+  state.lastSettingsFetch = row.last_settings_fetch_ms || null;
+  state.lastError         = row.last_error || null;
+  state.online            = false;
+  if (state.processedData) {
+    g_historySignatures.set(accountId, buildHistorySignature(state.processedData));
+  }
+  return true;
+};
+
+const loadLocalAccountSnapshotStore = () => {
+  try {
+    const payload = JSON.parse(fs.readFileSync(CONFIG.ACCOUNT_SNAPSHOT_CACHE_FILE, 'utf8'));
+    return {
+      updated_at: payload?.updated_at || null,
+      accounts: payload?.accounts && typeof payload.accounts === 'object' ? payload.accounts : {},
+    };
+  } catch {
+    return { updated_at: null, accounts: {} };
+  }
+};
+
+const saveLocalAccountSnapshotStore = (store) => {
+  const accounts = store?.accounts && typeof store.accounts === 'object' ? store.accounts : {};
+  safeWriteJSONFile(CONFIG.ACCOUNT_SNAPSHOT_CACHE_FILE, {
+    updated_at: new Date().toISOString(),
+    accounts,
+  });
+};
+
+const persistLocalAccountSnapshotNow = (state, row = null) => {
+  if (!state?.accountId) return;
+  try {
+    const snapshotRow = row || accountSnapshotRowFromState(state);
+    const store = loadLocalAccountSnapshotStore();
+    store.accounts[String(state.accountId)] = snapshotRow;
+    saveLocalAccountSnapshotStore(store);
+  } catch (e) {
+    console.warn(`[Storage] Could not update local snapshot cache for ${state.accountId}: ${e.message}`);
+  }
+};
+
+const scheduleLocalAccountSnapshotPersist = (state, delayMs = CONFIG.LOCAL_SNAPSHOT_WRITE_INTERVAL_MS) => {
+  if (!state?.accountId) return;
+  const existing = g_localSnapshotPersistTimers.get(state.accountId);
+  if (existing) return;
+  const timer = setTimeout(() => {
+    g_localSnapshotPersistTimers.delete(state.accountId);
+    persistLocalAccountSnapshotNow(state);
+  }, Math.max(0, delayMs));
+  g_localSnapshotPersistTimers.set(state.accountId, timer);
+};
+
+const deleteLocalAccountSnapshot = (accountId) => {
+  const id = String(accountId || '');
+  if (!id) return;
+  const existing = g_localSnapshotPersistTimers.get(id);
+  if (existing) clearTimeout(existing);
+  g_localSnapshotPersistTimers.delete(id);
+  const store = loadLocalAccountSnapshotStore();
+  if (!store.accounts || !Object.prototype.hasOwnProperty.call(store.accounts, id)) return;
+  delete store.accounts[id];
+  saveLocalAccountSnapshotStore(store);
+};
+
+const restoreUserAccountsFromLocal = (userId, reason = 'local-cache') => {
+  if (!userId) return 0;
+  const store = loadLocalAccountSnapshotStore();
+  let restored = 0;
+  for (const row of Object.values(store.accounts || {})) {
+    if (String(row?.owner_user_id || '') !== String(userId)) continue;
+    if (restoreAccountSnapshotRow(row, userId)) restored++;
+  }
+  if (restored) {
+    console.log(`[Storage] Restored ${restored} local account snapshot(s) for user ${publicHash(userId)} (${reason}).`);
+  }
+  return restored;
+};
+
+const hydrateLocalAccountSnapshots = () => {
+  const store = loadLocalAccountSnapshotStore();
+  let restored = 0;
+  for (const row of Object.values(store.accounts || {})) {
+    if (restoreAccountSnapshotRow(row)) restored++;
+  }
+  console.log(`[Storage] Restored ${restored} local account snapshot(s).`);
+  return restored;
+};
+
+const restoreUserAccountsFromDatabase = async (userId, reason = 'on-demand') => {
+  if (!userId) return 0;
+
+  const cached = cacheGet(g_userAccountRestoreCache, userId);
+  if (cached !== undefined) return 0;
+  cacheSet(g_userAccountRestoreCache, userId, true, CONFIG.USER_ACCOUNT_RESTORE_CACHE_MS);
+
+  const localRestored = restoreUserAccountsFromLocal(userId, reason);
+  if (localRestored > 0 || !supabase) return localRestored;
+
+  try {
+    const { data: ownerRows, error: ownerError } = await dbFrom('tradevault_account_owners')
+      .select('account_id,user_id,claimed_at')
+      .eq('user_id', userId)
+      .order('claimed_at', { ascending: false })
+      .limit(CONFIG.USER_ACCOUNT_RESTORE_LIMIT);
+    if (ownerError) throw ownerError;
+
+    const accountIds = [];
+    for (const row of ownerRows || []) {
+      const accountId = String(row.account_id || '');
+      if (!accountId || isAccountDeletedForUser(userId, accountId)) continue;
+      g_accountOwners.set(accountId, userId);
+      accountIds.push(accountId);
+    }
+
+    const needsSnapshot = accountIds.filter((accountId) => {
+      const state = g_accounts.get(accountId);
+      return !state || !state.processedData;
+    });
+    if (!needsSnapshot.length) return 0;
+
+    const { data: snapshotRows, error: snapshotError } = await dbFrom('tradevault_account_snapshots')
+      .select('account_id,owner_user_id,config,processed_data,ea_status,push_counts,last_seen_ms,last_settings_fetch_ms,last_error,updated_at')
+      .in('account_id', needsSnapshot)
+      .order('updated_at', { ascending: false })
+      .limit(CONFIG.USER_ACCOUNT_RESTORE_LIMIT);
+    if (snapshotError) throw snapshotError;
+
+    const restoredIds = new Set();
+    for (const row of snapshotRows || []) {
+      const accountId = String(row.account_id || '');
+      if (!accountId || restoredIds.has(accountId)) continue;
+      if (restoreAccountSnapshotRow(row, userId)) {
+        restoredIds.add(accountId);
+        const state = g_accounts.get(accountId);
+        if (state) persistLocalAccountSnapshotNow(state, row);
+      }
+    }
+
+    if (restoredIds.size) {
+      console.log(`[Supabase] Restored ${restoredIds.size} account snapshot(s) for user ${publicHash(userId)} (${reason}).`);
+    }
+    return restoredIds.size;
+  } catch (e) {
+    logDbError(`restore user accounts:${publicHash(userId)}:${reason}`, e);
+    cacheDelete(g_userAccountRestoreCache, userId);
+    return 0;
+  }
 };
 
 const persistDurableTradingDataIfNeeded = (state, reason = 'live') => {
@@ -3410,10 +3839,11 @@ const scheduleAccountSnapshotPersist = (state, delayMs = CONFIG.DB_WRITE_DEBOUNC
 };
 
 const deleteAccountSnapshot = async (accountId) => {
-  if (!supabase) return;
   const existing = g_snapshotPersistTimers.get(accountId);
   if (existing) clearTimeout(existing);
   g_snapshotPersistTimers.delete(accountId);
+  deleteLocalAccountSnapshot(accountId);
+  if (!supabase) return;
   const { error } = await dbFrom('tradevault_account_snapshots')
     .delete()
     .eq('account_id', accountId);
@@ -3592,6 +4022,8 @@ eaRouter.post('/live', async (req, res) => {
   try {
     state.processedData = processData(merged, accountId);
     broadcast('FULL_UPDATE', state.processedData, accountId);
+    scheduleLocalAccountSnapshotPersist(state);
+    scheduleAdminAccountUpdate(state, 'live');
 
     if (state.config.role === 'MASTER') {
       diffMasterPositions(state);
@@ -3629,6 +4061,8 @@ eaRouter.post('/static', async (req, res) => {
       };
       state.processedData = processData(merged, accountId);
       broadcast('STATIC_UPDATE', state.processedData, accountId);
+      scheduleLocalAccountSnapshotPersist(state);
+      scheduleAdminAccountUpdate(state, 'static');
     } catch (err) {
       state.lastError = { context: 'static', message: err.message, time: Date.now() };
     }
@@ -3651,6 +4085,8 @@ eaRouter.post('/status', async (req, res) => {
   state.eaStatus = req.body;
   state.pushCounts.status++;
   broadcast('STATUS_UPDATE', { accountId, status: req.body }, accountId);
+  scheduleLocalAccountSnapshotPersist(state);
+  scheduleAdminAccountUpdate(state, 'status');
   res.json({ ok: true, push_count: state.pushCounts.status });
 });
 
@@ -4141,6 +4577,8 @@ const syncDirectAccount = async (accountId, options = {}) => {
     state.online = true;
     state.lastError = null;
     state.pushCounts.live++;
+    scheduleLocalAccountSnapshotPersist(state);
+    scheduleAdminAccountUpdate(state, 'direct');
     persistDurableTradingDataIfNeeded(state, 'direct');
     if (options.broadcast !== false) {
       broadcast('FULL_UPDATE', state.processedData, id);
@@ -4615,6 +5053,7 @@ app.post('/api/public/feedback', async (req, res) => {
       created_at: new Date().toISOString(),
     });
     if (error) throw error;
+    clearAdminInsightsCache();
     res.status(201).json({ success: true });
   } catch (error) {
     logDbError('public feedback', error);
@@ -4699,6 +5138,21 @@ app.post('/api/streak/check-in', async (req, res) => {
 });
 
 app.get('/api/auth/me', async (req, res) => {
+  const pendingReferralCode = firstValue(
+    req.headers['x-fap-referral-code'],
+    req.query.ref,
+    req.query.referralCode,
+  );
+  if (pendingReferralCode) cacheDelete(g_authMeCache, req.user.id);
+  const cachedAuth = pendingReferralCode ? null : cacheGet(g_authMeCache, req.user.id);
+  if (cachedAuth) {
+    return res.json({
+      ...cachedAuth,
+      user: req.user,
+      license: req.license,
+    });
+  }
+
   const keyRows = supabase
     ? await dbFrom('tradevault_user_ea_keys')
         .select('key_prefix,created_at,revoked_at')
@@ -4714,11 +5168,6 @@ app.get('/api/auth/me', async (req, res) => {
   let referralCodeRow = null;
   let acceptedReferral = null;
   let streak = null;
-  const pendingReferralCode = firstValue(
-    req.headers['x-fap-referral-code'],
-    req.query.ref,
-    req.query.referralCode,
-  );
 
   try {
     supportAgent = await getSupportAgent(req.user.id, req.user.email, req.user.name);
@@ -4739,7 +5188,7 @@ app.get('/api/auth/me', async (req, res) => {
     if (!isMissingTableError(error, STREAK_TABLE)) logDbError(`auth streak:${req.user.id}`, error);
   }
 
-  res.json({
+  const payload = {
     user: req.user,
     eaKey: keyRows.data?.[0] || null,
     license: req.license,
@@ -4755,7 +5204,17 @@ app.get('/api/auth/me', async (req, res) => {
       accepted: acceptedReferral ? serializeReferralRow(acceptedReferral) : null,
     } : null,
     streak,
-  });
+  };
+
+  if (!pendingReferralCode) {
+    cacheSet(g_authMeCache, req.user.id, {
+      ...payload,
+      user: undefined,
+      license: undefined,
+    }, CONFIG.AUTH_ME_CACHE_MS);
+  }
+
+  res.json(payload);
 });
 
 app.get('/api/referrals/me', async (req, res) => {
@@ -4802,6 +5261,7 @@ app.post('/api/auth/ea-key/rotate', async (req, res) => {
   if (error) return res.status(500).json({ error: error.message });
 
   g_eaKeyOwners.set(keyHash, req.user.id);
+  cacheDelete(g_authMeCache, req.user.id);
   res.json({
     apiKey: secret,
     keyPrefix,
@@ -5120,6 +5580,51 @@ app.get('/api/support/admin/insights', async (req, res) => {
   const agent = await requireSupportAgent(req, res);
   if (!agent) return;
 
+  const agentPayload = {
+    userId: agent.user_id,
+    role: agent.role,
+    displayName: agent.display_name || req.user.name,
+  };
+  const forceRefresh = ['1', 'true', 'yes'].includes(String(req.query.refresh || '').toLowerCase());
+  const weeklyKey = getAdminInsightsWeekKey();
+  if (
+    !forceRefresh &&
+    CONFIG.ADMIN_INSIGHTS_WEEKLY_CACHE &&
+    g_adminInsightsCache?.weekKey === weeklyKey &&
+    g_adminInsightsCache?.payload
+  ) {
+    return res.json({
+      ...cloneJSON(g_adminInsightsCache.payload),
+      agent: agentPayload,
+      cached: true,
+      cacheSource: 'memory-weekly',
+    });
+  }
+  if (!forceRefresh && CONFIG.ADMIN_INSIGHTS_WEEKLY_CACHE) {
+    const fileCache = loadAdminInsightsCacheFile();
+    if (fileCache.week_key === weeklyKey && fileCache.payload) {
+      g_adminInsightsCache = {
+        weekKey: weeklyKey,
+        payload: cloneJSON(fileCache.payload),
+        expiresAt: Date.now() + CONFIG.ADMIN_INSIGHTS_CACHE_MS,
+      };
+      return res.json({
+        ...cloneJSON(fileCache.payload),
+        agent: agentPayload,
+        cached: true,
+        cacheSource: 'file-weekly',
+      });
+    }
+  }
+  if (!forceRefresh && g_adminInsightsCache && g_adminInsightsCache.expiresAt > Date.now()) {
+    return res.json({
+      ...cloneJSON(g_adminInsightsCache.payload),
+      agent: agentPayload,
+      cached: true,
+      cacheSource: 'memory',
+    });
+  }
+
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
@@ -5144,7 +5649,7 @@ app.get('/api/support/admin/insights', async (req, res) => {
   try {
     const [overviewRows, ticketRows, rollupRows, feedbackRows, activityTodayRows, activityRecentRows, streakRows] = await Promise.all([
       safeSelect('admin overview', dbFrom('forexanalyzer_client_overview')
-        .select('*')
+        .select('user_id,email,full_name,nickname,plan_mode,license_status,trial_started_at,trial_ends_at,grace_ends_at,paid_until,account_id,connection_method,broker,account_role,balance,equity,open_trades,closed_trades,ea_status,last_seen_at,snapshot_updated_at,account_type,account_environment,currency,leverage,server_name,running_profit')
         .order('snapshot_updated_at', { ascending: false })
         .limit(1000)),
       safeSelect('admin ticket stats', dbFrom(SUPPORT_TICKET_TABLE)
@@ -5160,16 +5665,16 @@ app.get('/api/support/admin/insights', async (req, res) => {
         .order('created_at', { ascending: false })
         .limit(500)),
       safeSelect('admin activity today', dbFrom(ACTIVITY_TABLE)
-        .select('id,user_id,page_path,page_title,created_at')
+        .select('user_id,page_path,created_at')
         .eq('event_type', 'page_view')
         .gte('created_at', startOfToday.toISOString())
         .order('created_at', { ascending: false })
-        .limit(5000)),
+        .limit(2000)),
       safeSelect('admin activity recent', dbFrom(ACTIVITY_TABLE)
-        .select('id,user_id,page_path,page_title,created_at')
+        .select('user_id,page_path,created_at')
         .eq('event_type', 'page_view')
         .order('created_at', { ascending: false })
-        .limit(2000)),
+        .limit(1000)),
       safeSelect('admin streak stats', dbFrom(STREAK_TABLE)
         .select('user_id,current_streak,longest_streak,last_active_date,last_seen_at,timezone,status,monthly_restore_period,monthly_restore_count,total_restores_used,restore_limit,milestones_sent')
         .limit(1000)),
@@ -5305,12 +5810,8 @@ app.get('/api/support/admin/insights', async (req, res) => {
       .sort((a, b) => b.views - a.views)
       .slice(0, 20);
 
-    res.json({
-      agent: {
-        userId: agent.user_id,
-        role: agent.role,
-        displayName: agent.display_name || req.user.name,
-      },
+    const payload = {
+      agent: agentPayload,
       generatedAt: new Date().toISOString(),
       metrics: {
         totalUsers: users.length,
@@ -5353,7 +5854,18 @@ app.get('/api/support/admin/insights', async (req, res) => {
         responses: row.responses || {},
         createdAt: row.created_at,
       })),
-    });
+      cached: false,
+    };
+
+    g_adminInsightsCache = {
+      weekKey: weeklyKey,
+      payload: cloneJSON(payload),
+      expiresAt: Date.now() + CONFIG.ADMIN_INSIGHTS_CACHE_MS,
+    };
+    if (CONFIG.ADMIN_INSIGHTS_WEEKLY_CACHE) {
+      saveAdminInsightsCacheFile(weeklyKey, payload);
+    }
+    res.json(payload);
   } catch (error) {
     res.status(500).json({ error: error.message || 'Could not load admin insights' });
   }
@@ -5469,7 +5981,10 @@ app.delete('/api/share-links/:token', async (req, res) => {
   res.json({ success: true });
 });
 
-app.get('/api/accounts', (req, res) => res.json(buildMultiAccountSnapshot(req.user.id)));
+app.get('/api/accounts', async (req, res) => {
+  await restoreUserAccountsFromDatabase(req.user.id, 'api-accounts');
+  res.json(buildMultiAccountSnapshot(req.user.id));
+});
 
 app.get('/api/direct-accounts', async (req, res) => {
   const rows = [...g_directAccounts.values()]
@@ -5703,6 +6218,15 @@ app.delete('/api/accounts/:accountId', async (req, res) => {
     await clearAccountOwner(accountId);
     await deleteAccountSnapshot(accountId);
     await revokeShareLinksForAccount(accountId, req.user.id);
+    clearAdminInsightsCache();
+    io.to('support:agents').emit('ADMIN_ACCOUNT_DELETED', {
+      type: 'ADMIN_ACCOUNT_DELETED',
+      data: {
+        accountId,
+        userId: req.user.id,
+        generatedAt: new Date().toISOString(),
+      },
+    });
     res.json({ success: true });
   } catch (err) {
     console.error(`[Account] Delete failed for ${accountId}: ${err.message}`);
@@ -6237,6 +6761,7 @@ app.get('/api/debug', (req, res) => {
       enabled: DATABASE_ENABLED,
       schema:  CONFIG.SUPABASE_SCHEMA,
       url:     CONFIG.SUPABASE_URL ? CONFIG.SUPABASE_URL.replace(/\/\/([^./]+)/, '//***') : null,
+      egress:  getSupabaseEgressSummary(),
     },
     settings_dir:      CONFIG.SETTINGS_DIR,
     settings_files:    fs.existsSync(CONFIG.SETTINGS_DIR)
@@ -6461,30 +6986,16 @@ const hydrateAccountSnapshots = async () => {
 
   try {
     const { data, error } = await dbFrom('tradevault_account_snapshots')
-      .select('account_id,owner_user_id,config,raw_live_data,raw_static_data,processed_data,ea_status,push_counts,last_seen_ms,last_settings_fetch_ms,last_error,updated_at');
+      .select('account_id,owner_user_id,config,processed_data,ea_status,push_counts,last_seen_ms,last_settings_fetch_ms,last_error,updated_at')
+      .order('updated_at', { ascending: false })
+      .limit(CONFIG.SNAPSHOT_HYDRATE_LIMIT);
     if (error) throw error;
 
     for (const row of data || []) {
-      if ((row.owner_user_id && isAccountDeletedForUser(row.owner_user_id, row.account_id)) || isAccountDeletedByAnyUser(row.account_id)) {
-        continue;
+      if (restoreAccountSnapshotRow(row)) {
+        const state = g_accounts.get(String(row.account_id || ''));
+        if (state) persistLocalAccountSnapshotNow(state, row);
       }
-      if (!g_accounts.has(row.account_id)) {
-        registerAccount(row.account_id, row.config || {});
-      }
-      if (row.owner_user_id && !g_accountOwners.has(row.account_id)) {
-        g_accountOwners.set(row.account_id, row.owner_user_id);
-      }
-      const state = g_accounts.get(row.account_id);
-      Object.assign(state.config, row.config || {});
-      state.rawLiveData       = row.raw_live_data || null;
-      state.rawStaticData     = row.raw_static_data || null;
-      state.processedData     = row.processed_data || null;
-      state.eaStatus          = row.ea_status || null;
-      state.pushCounts        = row.push_counts || { live: 0, static: 0, status: 0 };
-      state.lastSeen          = row.last_seen_ms || null;
-      state.lastSettingsFetch = row.last_settings_fetch_ms || null;
-      state.lastError         = row.last_error || null;
-      state.online            = false;
     }
 
     console.log(`[Supabase] Restored ${data?.length || 0} latest account snapshot(s).`);
@@ -6497,7 +7008,12 @@ const startServer = async () => {
   await hydrateDatabase();
   await hydrateDirectAccounts();
   loadAccountRegistry();
-  await hydrateAccountSnapshots();
+  hydrateLocalAccountSnapshots();
+  if (CONFIG.SUPABASE_STARTUP_SNAPSHOT_HYDRATE) {
+    await hydrateAccountSnapshots();
+  } else {
+    console.log('[Supabase] Startup account snapshot hydrate skipped. User login will restore from Supabase only when local cache is missing.');
+  }
   startRetentionEmailJobs();
 
   server.listen(CONFIG.PORT, '0.0.0.0', () => {
