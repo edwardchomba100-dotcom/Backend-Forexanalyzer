@@ -365,7 +365,7 @@ const CONFIG = {
   PAID_EA_BUILD_TOKEN:       process.env.PAID_EA_BUILD_TOKEN || '',
   PAID_EA_ACCESS_WINDOW_HOURS: +(process.env.PAID_EA_ACCESS_WINDOW_HOURS || 48),
   PAID_EA_RENEWAL_MIN_MS:    +(process.env.PAID_EA_RENEWAL_MIN_MS || 12 * 60 * 60 * 1000),
-  PAID_EA_REQUIRE_MARKET_LICENSE: process.env.PAID_EA_REQUIRE_MARKET_LICENSE !== 'false',
+  PAID_EA_REQUIRE_MARKET_LICENSE: process.env.PAID_EA_REQUIRE_MARKET_LICENSE === 'true',
   PAID_EA_PERMANENT_LICENSE_TYPES: process.env.PAID_EA_PERMANENT_LICENSE_TYPES || 'LICENSE_FULL,FULL,2',
   PAID_EA_RENTAL_LICENSE_TYPES: process.env.PAID_EA_RENTAL_LICENSE_TYPES || 'LICENSE_TIME,TIME,3',
   FREE_ACCOUNT_LIMIT:         +(process.env.FREE_ACCOUNT_LIMIT || 3),
@@ -688,6 +688,7 @@ const serializeTrialLicense = (row, options = {}) => {
     paidEaLicenseType: row?.paid_ea_license_type || null,
     paidEaMarketProductId: row?.paid_ea_market_product_id || null,
     paidEaAccessWindowHours: CONFIG.PAID_EA_ACCESS_WINDOW_HOURS,
+    deviceLockEmail: options.deviceLockEmail || null,
     warningStartsAt: new Date(warningStartsMs).toISOString(),
     daysUntilTrialEnds: Math.max(0, Math.ceil((trialEndsMs - now) / DAY_MS)),
     daysUntilAccessEnds: Math.max(0, Math.ceil((accessEndsMs - now) / DAY_MS)),
@@ -735,6 +736,24 @@ const cleanIdentityText = (value, maxLength = 160) =>
 
 const normalizeIdentityPart = (value) =>
   cleanIdentityText(value, 220).toLowerCase();
+
+const loadUserLoginEmail = async (userId) => {
+  if (!supabase || !userId) return '';
+
+  const profile = await dbFrom('tradevault_user_profiles')
+    .select('email')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (!profile.error && profile.data?.email) return cleanIdentityText(profile.data.email, 240);
+
+  const trial = await dbFrom(TRIAL_LICENSE_TABLE)
+    .select('email')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (!trial.error && trial.data?.email) return cleanIdentityText(trial.data.email, 240);
+
+  return '';
+};
 
 const compactMetadata = (metadata = {}) => {
   const out = {};
@@ -829,12 +848,16 @@ const recordTrialIdentityClaim = async (user, claimType, claimHash, metadata = {
 
   if (existing.data?.user_id && existing.data.user_id !== user.id) {
     if (!blocking) return { ok: true, conflict: existing.data, blocked: false };
+    const conflictEmail = await loadUserLoginEmail(existing.data.user_id);
     return {
       ok: false,
       blocked: true,
       claimType: cleanType,
       conflict: existing.data,
-      message: 'This device or MetaTrader account has already started a ForexAnalyzer Pro free trial under another login.',
+      conflictEmail,
+      message: conflictEmail
+        ? `This device is already linked to ${conflictEmail}. Please sign in with that email using the email magic link.`
+        : 'This device or MetaTrader account has already started a ForexAnalyzer Pro free trial under another login.',
     };
   }
 
@@ -1042,11 +1065,11 @@ const normalizeEaLicenseType = (proof = {}) => {
 
 const paidEaLicenseMode = (proof = {}) => {
   const licenseType = normalizeEaLicenseType(proof);
-  if (!licenseType) return CONFIG.PAID_EA_REQUIRE_MARKET_LICENSE ? '' : 'rolling';
   const permanentTypes = new Set(splitConfigList(CONFIG.PAID_EA_PERMANENT_LICENSE_TYPES));
   const rentalTypes = new Set(splitConfigList(CONFIG.PAID_EA_RENTAL_LICENSE_TYPES));
   if (permanentTypes.has(licenseType) || permanentTypes.has(String(proof.licenseCode || '').toUpperCase())) return 'permanent';
   if (rentalTypes.has(licenseType) || rentalTypes.has(String(proof.licenseCode || '').toUpperCase())) return 'rolling';
+  if (!CONFIG.PAID_EA_REQUIRE_MARKET_LICENSE) return 'rolling';
   return '';
 };
 
@@ -1182,6 +1205,7 @@ const ensureUserLicense = async (user, deviceHash = null, identity = {}) => {
 
   let deviceBlocked = false;
   let blockMessage = null;
+  let deviceLockEmail = null;
   if (requestIdentity.deviceHash) {
     const matches = await dbFrom(TRIAL_LICENSE_TABLE)
       .select('user_id,email')
@@ -1190,9 +1214,13 @@ const ensureUserLicense = async (user, deviceHash = null, identity = {}) => {
     if (matches.error) {
       logDbError('check trial device', matches.error);
     } else {
-      deviceBlocked = (matches.data || []).some((match) => match.user_id && match.user_id !== user.id);
-      if (deviceBlocked) {
-        blockMessage = 'This browser is already linked to a different ForexAnalyzer Pro trial account.';
+      const conflict = (matches.data || []).find((match) => match.user_id && match.user_id !== user.id);
+      deviceBlocked = Boolean(conflict);
+      if (conflict) {
+        deviceLockEmail = cleanIdentityText(conflict.email, 240) || await loadUserLoginEmail(conflict.user_id);
+        blockMessage = deviceLockEmail
+          ? `This browser is already linked to ${deviceLockEmail}. Please sign in with that email using the email magic link.`
+          : 'This browser is already linked to a different ForexAnalyzer Pro trial account.';
       }
     }
   }
@@ -1200,10 +1228,11 @@ const ensureUserLicense = async (user, deviceHash = null, identity = {}) => {
   const identityResult = await recordTrialRequestIdentityClaims(user, requestIdentity);
   if (identityResult.blocked) {
     deviceBlocked = true;
+    deviceLockEmail = identityResult.conflictEmail || deviceLockEmail;
     blockMessage = identityResult.message;
   }
 
-  const license = serializeTrialLicense(row, { deviceBlocked, message: blockMessage });
+  const license = serializeTrialLicense(row, { deviceBlocked, message: blockMessage, deviceLockEmail });
   g_userLicenseCache.set(cacheKey, { license, expiresAt: Date.now() + 60 * 1000 });
   return license;
 };
@@ -1791,7 +1820,9 @@ const ensureUserCanAddAccount = async (userId, accountId) => {
   const current = countOwnedAccounts(userId);
   if (current >= limit) {
     const err = new Error(
-      `Account limit reached. Your ${license?.paid ? 'paid' : 'free'} plan allows ${limit} account${limit === 1 ? '' : 's'}. Upgrade or remove an account before connecting another.`,
+      license?.paid
+        ? `Account limit reached. Your paid plan allows ${limit} account${limit === 1 ? '' : 's'}. Remove an account before connecting another.`
+        : `Free account limit reached. The free plan allows ${limit} account${limit === 1 ? '' : 's'}. Connect this account with the paid EA to unlock paid access and add more accounts.`,
     );
     err.statusCode = 402;
     err.accountLimit = limit;
@@ -3151,7 +3182,12 @@ const ensureEaCanUseAccount = async (req, res, accountId) => {
     await setAccountOwner(accountId, req.eaUserId);
     return true;
   } catch (e) {
-    res.status(e.statusCode || 403).json({ error: e.message });
+    res.status(e.statusCode || 403).json({
+      error: e.message,
+      accountLimit: e.accountLimit,
+      currentAccounts: e.currentAccounts,
+      requiresPaidEa: e.statusCode === 402,
+    });
     return false;
   }
 };
@@ -3179,7 +3215,7 @@ eaRouter.use(async (req, res, next) => {
       license = await ensureUserLicense({ id: ownerId, email: '' });
       if (!license?.paid || !license?.hasFullAccess) {
         return res.status(403).json({
-          error: 'Invalid paid EA proof. The paid EA must send the correct build token and a valid MQL5 Market paid/rental license.',
+          error: 'Invalid paid EA proof. The paid EA must send the correct paid build token.',
           licenseType: normalizeEaLicenseType(paidProof) || null,
         });
       }
