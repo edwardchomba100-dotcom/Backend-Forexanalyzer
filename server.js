@@ -187,15 +187,6 @@ class SupabaseRestQuery {
     return this;
   }
 
-  in(column, values = []) {
-    const items = [...new Set((Array.isArray(values) ? values : [values])
-      .filter((value) => value !== undefined && value !== null)
-      .map((value) => String(value).replace(/"/g, '\\"')))];
-    if (!items.length) return this;
-    this.params.set(column, `in.(${items.map((value) => `"${value}"`).join(',')})`);
-    return this;
-  }
-
   neq(column, value) {
     this.params.set(column, `neq.${encodeFilterValue(value)}`);
     return this;
@@ -281,13 +272,6 @@ class SupabaseRestQuery {
     });
 
     const text = await res.text();
-    recordSupabaseEgress({
-      table: this.table,
-      method: this.method,
-      status: res.status,
-      columns: this.selectColumns,
-      bytes: Buffer.byteLength(text || '', 'utf8'),
-    });
     let payload = null;
     if (text) {
       try { payload = JSON.parse(text); } catch { payload = text; }
@@ -353,8 +337,6 @@ const CONFIG = {
   EQUITY_HISTORY_FILE:    path.join(__dirname, 'data', 'equity_history.json'),
   INSIGHTS_FILE:          path.join(__dirname, 'data', 'insights.json'),
   ACCOUNTS_FILE:          path.join(__dirname, 'data', 'accounts.json'),
-  ACCOUNT_SNAPSHOT_CACHE_FILE: path.join(__dirname, 'data', '.account_snapshots.json'),
-  ADMIN_INSIGHTS_CACHE_FILE:   path.join(__dirname, 'data', '.admin_insights_cache.json'),
   COPY_PAIRS_FILE:        path.join(__dirname, 'data', 'copy_pairs.json'),
   NEWS_FILE:              path.join(__dirname, 'data', 'news_events.json'),
   COMMAND_LOG_FILE:       path.join(__dirname, 'data', 'command_log.json'),
@@ -381,6 +363,11 @@ const CONFIG = {
   FREE_EA_URL:               process.env.FREE_EA_URL || 'https://www.mql5.com/en/market/product/111375',
   PAID_EA_URL:               process.env.PAID_EA_URL || 'https://www.mql5.com/en/market/product/182969',
   PAID_EA_BUILD_TOKEN:       process.env.PAID_EA_BUILD_TOKEN || '',
+  PAID_EA_ACCESS_WINDOW_HOURS: +(process.env.PAID_EA_ACCESS_WINDOW_HOURS || 48),
+  PAID_EA_RENEWAL_MIN_MS:    +(process.env.PAID_EA_RENEWAL_MIN_MS || 12 * 60 * 60 * 1000),
+  PAID_EA_REQUIRE_MARKET_LICENSE: process.env.PAID_EA_REQUIRE_MARKET_LICENSE !== 'false',
+  PAID_EA_PERMANENT_LICENSE_TYPES: process.env.PAID_EA_PERMANENT_LICENSE_TYPES || 'LICENSE_FULL,FULL,2',
+  PAID_EA_RENTAL_LICENSE_TYPES: process.env.PAID_EA_RENTAL_LICENSE_TYPES || 'LICENSE_TIME,TIME,3',
   FREE_ACCOUNT_LIMIT:         +(process.env.FREE_ACCOUNT_LIMIT || 3),
   PAID_ACCOUNT_LIMIT:         +(process.env.PAID_ACCOUNT_LIMIT || 5),
 
@@ -390,21 +377,11 @@ const CONFIG = {
   SUPPORT_FROM_EMAIL:        process.env.SUPPORT_FROM_EMAIL || 'ForexAnalyzer Pro <support@forexanalyzerpro.com>',
   RESEND_API_KEY:            process.env.RESEND_API_KEY || '',
   REFERRAL_BONUS_DAYS:       +(process.env.REFERRAL_BONUS_DAYS || 7),
-
   STREAK_TIMEZONE:           process.env.STREAK_TIMEZONE || 'Africa/Nairobi',
   STREAK_BASE_RESTORES:      +(process.env.STREAK_BASE_RESTORES || 3),
   STREAK_ADVANCED_RESTORES:  +(process.env.STREAK_ADVANCED_RESTORES || 5),
   STREAK_ADVANCED_DAYS:      +(process.env.STREAK_ADVANCED_DAYS || 30),
-  STREAK_REMINDER_HOUR:      +(process.env.STREAK_REMINDER_HOUR || 20),
-  STREAK_REQUIRED_ACTIVE_MS:  +(process.env.STREAK_REQUIRED_ACTIVE_MS || 3 * 60 * 1000),
-  RETENTION_EMAILS_ENABLED:  process.env.RETENTION_EMAILS_ENABLED !== 'false',
-  RETENTION_JOB_INTERVAL_MS: +(process.env.RETENTION_JOB_INTERVAL_MS || 30 * 60 * 1000),
-  RETENTION_INITIAL_NO_ACCOUNT_BLAST: process.env.RETENTION_INITIAL_NO_ACCOUNT_BLAST !== 'false',
-  NO_ACCOUNT_HELP_HOURS:     +(process.env.NO_ACCOUNT_HELP_HOURS || 3),
-  MISS_YOU_AFTER_DAYS:       +(process.env.MISS_YOU_AFTER_DAYS || 7),
-  SUPPORT_RETENTION_ENABLED: process.env.SUPPORT_RETENTION_ENABLED !== 'false',
-  SUPPORT_CONVERSATION_RETENTION_DAYS: +(process.env.SUPPORT_CONVERSATION_RETENTION_DAYS || 90),
-  SUPPORT_RETENTION_DELETE_LIMIT: +(process.env.SUPPORT_RETENTION_DELETE_LIMIT || 200),
+  STREAK_REQUIRED_ACTIVE_MS: +(process.env.STREAK_REQUIRED_ACTIVE_MS || 3 * 60 * 1000),
 
   METAAPI_TOKEN:             process.env.METAAPI_TOKEN || '',
   METAAPI_PROVISIONING_URL:  (process.env.METAAPI_PROVISIONING_URL || 'https://mt-provisioning-api-v1.agiliumtrade.agiliumtrade.ai').replace(/\/+$/, ''),
@@ -412,19 +389,6 @@ const CONFIG = {
   METAAPI_SYNC_INTERVAL_MS:  +(process.env.METAAPI_SYNC_INTERVAL_MS || 15000),
   METAAPI_HISTORY_DAYS:      +(process.env.METAAPI_HISTORY_DAYS || 180),
   METAAPI_HISTORY_LIMIT:     +(process.env.METAAPI_HISTORY_LIMIT || 1000),
-
-  SUPABASE_EGRESS_LOG_ENABLED: process.env.SUPABASE_EGRESS_LOG_ENABLED !== 'false',
-  SUPABASE_EGRESS_LOG_MIN_BYTES: +(process.env.SUPABASE_EGRESS_LOG_MIN_BYTES || 64 * 1024),
-  ADMIN_INSIGHTS_CACHE_MS:    +(process.env.ADMIN_INSIGHTS_CACHE_MS || 5 * 60 * 1000),
-  AUTH_ME_CACHE_MS:           +(process.env.AUTH_ME_CACHE_MS || 60 * 1000),
-  SUPPORT_AGENT_CACHE_MS:     +(process.env.SUPPORT_AGENT_CACHE_MS || 5 * 60 * 1000),
-  SUPPORT_PROFILE_CACHE_MS:   +(process.env.SUPPORT_PROFILE_CACHE_MS || 5 * 60 * 1000),
-  SNAPSHOT_HYDRATE_LIMIT:     +(process.env.SNAPSHOT_HYDRATE_LIMIT || 100),
-  SUPABASE_STARTUP_SNAPSHOT_HYDRATE: process.env.SUPABASE_STARTUP_SNAPSHOT_HYDRATE === 'true',
-  USER_ACCOUNT_RESTORE_LIMIT: +(process.env.USER_ACCOUNT_RESTORE_LIMIT || 20),
-  USER_ACCOUNT_RESTORE_CACHE_MS: +(process.env.USER_ACCOUNT_RESTORE_CACHE_MS || 2 * 60 * 1000),
-  LOCAL_SNAPSHOT_WRITE_INTERVAL_MS: +(process.env.LOCAL_SNAPSHOT_WRITE_INTERVAL_MS || process.env.LOCAL_SNAPSHOT_WRITE_DEBOUNCE_MS || 3000),
-  ADMIN_INSIGHTS_WEEKLY_CACHE: process.env.ADMIN_INSIGHTS_WEEKLY_CACHE !== 'false',
 };
 
 const DATABASE_ENABLED = !!(CONFIG.SUPABASE_URL && CONFIG.SUPABASE_SERVICE_ROLE_KEY);
@@ -440,7 +404,6 @@ const g_settingsMeta            = new Map();
 const g_alertsCache             = new Map();
 const g_alertsMeta              = new Map();
 const g_snapshotPersistTimers   = new Map();
-const g_localSnapshotPersistTimers = new Map();
 const g_accountOwners           = new Map();
 const g_eaKeyOwners             = new Map();
 const g_authTokenCache          = new Map();
@@ -453,14 +416,7 @@ const g_directAccounts          = new Map();
 const g_directSyncTimers        = new Map();
 const g_directSyncInFlight      = new Set();
 const g_directCreateTransactions= new Map();
-const g_supabaseEgressStats     = new Map();
-const g_supportAgentCache       = new Map();
-const g_supportProfileCache     = new Map();
-const g_authMeCache             = new Map();
-const g_userAccountRestoreCache = new Map();
-const g_adminAccountUpdateTimers = new Map();
-let   g_adminInsightsCache      = null;
-let   g_retentionJobRunning     = false;
+const g_paidEaRenewalCache      = new Map();
 
 const cloneJSON = (value) =>
   value === undefined ? undefined : JSON.parse(JSON.stringify(value));
@@ -469,68 +425,6 @@ const dbFrom = (table) =>
   CONFIG.SUPABASE_SCHEMA && CONFIG.SUPABASE_SCHEMA !== 'public'
     ? supabase.schema(CONFIG.SUPABASE_SCHEMA).from(table)
     : supabase.from(table);
-
-const cacheGet = (cache, key) => {
-  const hit = cache.get(key);
-  if (!hit || hit.expiresAt <= Date.now()) {
-    if (hit) cache.delete(key);
-    return undefined;
-  }
-  return hit.value;
-};
-
-const cacheSet = (cache, key, value, ttlMs) => {
-  cache.set(key, { value, expiresAt: Date.now() + Math.max(0, ttlMs || 0) });
-  return value;
-};
-
-const cacheDelete = (cache, key) => cache.delete(key);
-
-const clearAdminInsightsCache = () => {
-  g_adminInsightsCache = null;
-};
-
-const recordSupabaseEgress = ({ table, method, status, columns, bytes }) => {
-  if (!CONFIG.SUPABASE_EGRESS_LOG_ENABLED || !bytes) return;
-  const key = `${method || 'GET'} ${table || 'unknown'} ${columns || '*'}`;
-  const current = g_supabaseEgressStats.get(key) || {
-    key,
-    table: table || 'unknown',
-    method: method || 'GET',
-    columns: columns || '*',
-    requests: 0,
-    bytes: 0,
-    maxBytes: 0,
-    lastStatus: null,
-    lastAt: null,
-  };
-  current.requests += 1;
-  current.bytes += bytes;
-  current.maxBytes = Math.max(current.maxBytes, bytes);
-  current.lastStatus = status;
-  current.lastAt = new Date().toISOString();
-  g_supabaseEgressStats.set(key, current);
-
-  if (bytes >= CONFIG.SUPABASE_EGRESS_LOG_MIN_BYTES) {
-    console.warn(`[Supabase:Egress] ${key} -> ${(bytes / 1024).toFixed(1)} KB`);
-  }
-};
-
-const getSupabaseEgressSummary = () =>
-  [...g_supabaseEgressStats.values()]
-    .sort((a, b) => b.bytes - a.bytes)
-    .slice(0, 25)
-    .map((row) => ({
-      table: row.table,
-      method: row.method,
-      columns: row.columns,
-      requests: row.requests,
-      bytes: row.bytes,
-      mb: Number((row.bytes / 1024 / 1024).toFixed(3)),
-      maxKb: Number((row.maxBytes / 1024).toFixed(1)),
-      lastStatus: row.lastStatus,
-      lastAt: row.lastAt,
-    }));
 
 const logDbError = (label, err) => {
   const message = err?.message || err?.details || String(err);
@@ -639,22 +533,6 @@ const sanitizeUser = (user) => ({
   avatar: user.user_metadata?.avatar_url || user.user_metadata?.picture || '',
 });
 
-const getRequestTimezone = (req) => {
-  const raw = firstValue(
-    req?.headers?.['x-fap-timezone'],
-    req?.headers?.['x-user-timezone'],
-    req?.body?.timezone,
-  );
-  const timezone = cleanIdentityText(raw, 80);
-  if (!timezone) return CONFIG.STREAK_TIMEZONE;
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format(new Date());
-    return timezone;
-  } catch {
-    return CONFIG.STREAK_TIMEZONE;
-  }
-};
-
 const getAuthenticatedUser = async (token) => {
   if (!supabase || !token) return null;
   const cacheKey = hashSecret(token);
@@ -672,13 +550,12 @@ const getAuthenticatedUser = async (token) => {
   return data.user;
 };
 
-const upsertUserProfile = (user, timezone = '') => {
+const upsertUserProfile = (user) => {
   if (!supabase || !user?.id) return;
   const last = g_profileUpsertAt.get(user.id) || 0;
   if (Date.now() - last < 6 * 60 * 60 * 1000) return;
   g_profileUpsertAt.set(user.id, Date.now());
   const clean = sanitizeUser(user);
-  const safeTimezone = cleanIdentityText(timezone, 80) || CONFIG.STREAK_TIMEZONE;
   runDbTask(`profile:${user.id}`, async () => {
     const existing = await dbFrom('tradevault_user_profiles')
       .select('user_id')
@@ -691,8 +568,6 @@ const upsertUserProfile = (user, timezone = '') => {
       email: clean.email,
       full_name: clean.name,
       avatar_url: clean.avatar,
-      timezone: safeTimezone,
-      created_at: existing.data ? undefined : new Date().toISOString(),
       updated_at: new Date().toISOString(),
     }, { onConflict: 'user_id' });
     if (error) throw error;
@@ -713,7 +588,7 @@ const requireUser = async (req, res, next) => {
   if (!user) return res.status(401).json({ error: 'Authentication required' });
 
   req.user = sanitizeUser(user);
-  upsertUserProfile(user, getRequestTimezone(req));
+  upsertUserProfile(user);
   return next();
 };
 
@@ -776,9 +651,12 @@ const serializeTrialLicense = (row, options = {}) => {
   const graceEndsMs = toMs(row?.grace_ends_at) || baseStartMs + (CONFIG.FREE_TRIAL_DAYS + CONFIG.FREE_TRIAL_GRACE_DAYS) * DAY_MS;
   const paidUntilMs = toMs(row?.paid_until);
   const warningStartsMs = graceEndsMs - CONFIG.FREE_TRIAL_WARNING_DAYS * DAY_MS;
-  const paid = row?.plan_mode === 'paid' || (paidUntilMs !== null && paidUntilMs > now);
+  const paid = row?.plan_mode === 'paid'
+    ? (paidUntilMs === null || paidUntilMs > now)
+    : (paidUntilMs !== null && paidUntilMs > now);
   const deviceBlocked = !!options.deviceBlocked;
   const shouldWarn = !paid && !deviceBlocked && now >= warningStartsMs && now < graceEndsMs;
+  const accessEndsMs = paid && paidUntilMs !== null ? paidUntilMs : graceEndsMs;
 
   let status = 'active';
   if (options.migrationRequired) status = 'unconfigured';
@@ -806,9 +684,13 @@ const serializeTrialLicense = (row, options = {}) => {
     trialEndsAt: new Date(trialEndsMs).toISOString(),
     graceEndsAt: new Date(graceEndsMs).toISOString(),
     paidUntil: row?.paid_until || null,
+    paidEaLastSeenAt: row?.paid_ea_last_seen_at || null,
+    paidEaLicenseType: row?.paid_ea_license_type || null,
+    paidEaMarketProductId: row?.paid_ea_market_product_id || null,
+    paidEaAccessWindowHours: CONFIG.PAID_EA_ACCESS_WINDOW_HOURS,
     warningStartsAt: new Date(warningStartsMs).toISOString(),
     daysUntilTrialEnds: Math.max(0, Math.ceil((trialEndsMs - now) / DAY_MS)),
-    daysUntilAccessEnds: Math.max(0, Math.ceil((graceEndsMs - now) / DAY_MS)),
+    daysUntilAccessEnds: Math.max(0, Math.ceil((accessEndsMs - now) / DAY_MS)),
     freeEaUrl: CONFIG.FREE_EA_URL,
     paidEaUrl: CONFIG.PAID_EA_URL,
     accountLimit: paid ? CONFIG.PAID_ACCOUNT_LIMIT : CONFIG.FREE_ACCOUNT_LIMIT,
@@ -838,6 +720,12 @@ const firstValue = (...values) => {
   }
   return '';
 };
+
+const splitConfigList = (value) =>
+  String(value || '')
+    .split(',')
+    .map(item => item.trim().toUpperCase())
+    .filter(Boolean);
 
 const cleanIdentityText = (value, maxLength = 160) =>
   String(value ?? '')
@@ -1084,6 +972,24 @@ const ensureEaCanClaimMtAccount = async (req, res, accountId, payload = {}, stat
 const readEaProductProof = (req) => {
   const body = req.body && typeof req.body === 'object' ? req.body : {};
   const meta = body.meta && typeof body.meta === 'object' ? body.meta : {};
+  const licenseType = firstValue(
+    req.headers['x-ea-license-type'],
+    req.query.licenseType,
+    req.query.license_type,
+    meta.license_type,
+    meta.ea_license_type,
+    body.license_type,
+    body.ea_license_type,
+  ).toUpperCase();
+  const licenseCode = firstValue(
+    req.headers['x-ea-license-code'],
+    req.query.licenseCode,
+    req.query.license_code,
+    meta.license_code,
+    meta.ea_license_code,
+    body.license_code,
+    body.ea_license_code,
+  );
   return {
     edition: firstValue(
       req.headers['x-ea-edition'],
@@ -1115,30 +1021,83 @@ const readEaProductProof = (req) => {
       meta.build_token,
       body.build_token,
     ),
+    licenseType,
+    licenseCode,
   };
 };
 
 const wantsPaidEaAccess = (proof) =>
   proof.edition === 'PAID' || proof.productType === 'PREMIUM' || proof.marketProductId === '182969';
 
+const normalizeEaLicenseType = (proof = {}) => {
+  const raw = firstValue(proof.licenseType, proof.licenseCode).toUpperCase();
+  if (!raw) return '';
+  if (raw === '0' || raw === 'FREE') return 'LICENSE_FREE';
+  if (raw === '1' || raw === 'DEMO') return 'LICENSE_DEMO';
+  if (raw === '2' || raw === 'FULL') return 'LICENSE_FULL';
+  if (raw === '3' || raw === 'TIME') return 'LICENSE_TIME';
+  if (raw.startsWith('LICENSE_')) return raw;
+  return raw;
+};
+
+const paidEaLicenseMode = (proof = {}) => {
+  const licenseType = normalizeEaLicenseType(proof);
+  if (!licenseType) return CONFIG.PAID_EA_REQUIRE_MARKET_LICENSE ? '' : 'rolling';
+  const permanentTypes = new Set(splitConfigList(CONFIG.PAID_EA_PERMANENT_LICENSE_TYPES));
+  const rentalTypes = new Set(splitConfigList(CONFIG.PAID_EA_RENTAL_LICENSE_TYPES));
+  if (permanentTypes.has(licenseType) || permanentTypes.has(String(proof.licenseCode || '').toUpperCase())) return 'permanent';
+  if (rentalTypes.has(licenseType) || rentalTypes.has(String(proof.licenseCode || '').toUpperCase())) return 'rolling';
+  return '';
+};
+
 const isValidPaidEaProof = (proof) =>
   !!CONFIG.PAID_EA_BUILD_TOKEN
   && wantsPaidEaAccess(proof)
   && !!proof.buildToken
-  && safeSecretEquals(proof.buildToken, CONFIG.PAID_EA_BUILD_TOKEN);
+  && safeSecretEquals(proof.buildToken, CONFIG.PAID_EA_BUILD_TOKEN)
+  && !!paidEaLicenseMode(proof);
 
 const markUserPaidFromEa = async (userId, proof = {}) => {
   if (!supabase || !userId) return false;
-  const nowIso = new Date().toISOString();
+  const mode = paidEaLicenseMode(proof);
+  if (!mode) return false;
+
+  const now = Date.now();
+  const cached = g_paidEaRenewalCache.get(userId);
+  if (
+    cached &&
+    cached.mode === mode &&
+    cached.expiresAt > now &&
+    cached.licenseType === normalizeEaLicenseType(proof)
+  ) {
+    return true;
+  }
+
+  const nowIso = new Date(now).toISOString();
+  const paidUntil = mode === 'permanent'
+    ? null
+    : new Date(now + Math.max(1, CONFIG.PAID_EA_ACCESS_WINDOW_HOURS) * 60 * 60 * 1000).toISOString();
   const row = {
     user_id: userId,
     plan_mode: 'paid',
-    paid_until: null,
+    paid_until: paidUntil,
+    paid_ea_last_seen_at: nowIso,
+    paid_ea_license_type: normalizeEaLicenseType(proof) || null,
+    paid_ea_market_product_id: proof.marketProductId || null,
     updated_at: nowIso,
   };
 
-  const { error } = await dbFrom(TRIAL_LICENSE_TABLE)
+  let { error } = await dbFrom(TRIAL_LICENSE_TABLE)
     .upsert(row, { onConflict: 'user_id' });
+
+  if (error && /paid_ea_/i.test(error.message || '')) {
+    const fallbackRow = { ...row };
+    delete fallbackRow.paid_ea_last_seen_at;
+    delete fallbackRow.paid_ea_license_type;
+    delete fallbackRow.paid_ea_market_product_id;
+    ({ error } = await dbFrom(TRIAL_LICENSE_TABLE)
+      .upsert(fallbackRow, { onConflict: 'user_id' }));
+  }
 
   if (error) {
     logDbError('mark paid EA license', error);
@@ -1146,7 +1105,13 @@ const markUserPaidFromEa = async (userId, proof = {}) => {
   }
 
   clearUserLicenseCache(userId);
-  console.log(`[License] Paid EA verified for user ${userId}${proof.marketProductId ? ` (MQL5 product ${proof.marketProductId})` : ''}`);
+  g_paidEaRenewalCache.set(userId, {
+    mode,
+    licenseType: normalizeEaLicenseType(proof),
+    expiresAt: now + Math.max(60 * 1000, CONFIG.PAID_EA_RENEWAL_MIN_MS),
+  });
+  const untilText = paidUntil ? ` until ${paidUntil}` : ' permanently';
+  console.log(`[License] Paid EA verified for user ${userId}${untilText}${proof.marketProductId ? ` (MQL5 product ${proof.marketProductId})` : ''}`);
   return true;
 };
 
@@ -1257,8 +1222,12 @@ const isDashboardReadRequest = (req) => {
   if (req.path.startsWith('/support')) return true;
   if (req.path.startsWith('/activity')) return true;
   if (req.path.startsWith('/streak')) return true;
+  if (req.method === 'POST' && req.path === '/auth/ea-key/rotate') return true;
+  if (req.method === 'POST' && req.path === '/accounts/register') return true;
   if (req.method !== 'GET') return false;
   if (req.path === '/accounts') return true;
+  if (req.path === '/settings/defaults') return true;
+  if (/^\/accounts\/[^/]+\/settings$/.test(req.path)) return true;
   if (/^\/accounts\/[^/]+\/(dashboard|status|positions|history|analytics)$/.test(req.path)) return true;
   return false;
 };
@@ -1269,7 +1238,7 @@ const enforceTrialAccess = (req, res, next) => {
   return res.status(status).json({
     error: req.license.deviceBlocked
       ? 'This device or MetaTrader account is already linked to a different ForexAnalyzer Pro trial account.'
-      : 'Your free trial has ended. Upgrade on MQL5 to unlock this feature.',
+      : 'Your free trial has ended. Dashboard, pricing, support, Connect Account, and EA key setup remain available so you can upgrade or get help.',
     license: req.license,
   });
 };
@@ -1363,8 +1332,6 @@ initFile(CONFIG.JOURNAL_FILE,         { entries: [] });
 initFile(CONFIG.EQUITY_HISTORY_FILE,  { snapshots: [] });
 initFile(CONFIG.INSIGHTS_FILE,        { generated_at: null, insights: [] });
 initFile(CONFIG.ACCOUNTS_FILE,        { accounts: [] });
-initFile(CONFIG.ACCOUNT_SNAPSHOT_CACHE_FILE, { updated_at: null, accounts: {} });
-initFile(CONFIG.ADMIN_INSIGHTS_CACHE_FILE,   { week_key: null, updated_at: null, payload: null });
 initFile(CONFIG.COPY_PAIRS_FILE,      { pairs: [] });
 initFile(CONFIG.NEWS_FILE,            { events: [] });
 initFile(CONFIG.COMMAND_LOG_FILE,     { commands: [] });
@@ -1871,14 +1838,12 @@ const serializeShareLink = (row) => ({
 const SUPPORT_TICKET_TABLE = 'tradevault_support_tickets';
 const SUPPORT_MESSAGE_TABLE = 'tradevault_support_messages';
 const SUPPORT_AGENT_TABLE = 'tradevault_support_agents';
-const SUPPORT_TICKET_ROLLUP_TABLE = 'tradevault_support_ticket_rollups';
 const REFERRAL_CODE_TABLE = 'tradevault_referral_codes';
 const REFERRAL_TABLE = 'tradevault_referrals';
 const FEEDBACK_TABLE = 'tradevault_feedback_responses';
 const ACTIVITY_TABLE = 'tradevault_user_activity_events';
 const STREAK_TABLE = 'tradevault_user_streaks';
 const STREAK_EVENT_TABLE = 'tradevault_streak_events';
-const EMAIL_LOG_TABLE = 'tradevault_email_logs';
 
 const SUPPORT_CATEGORIES = new Set([
   'account_connection',
@@ -1917,9 +1882,6 @@ const emailText = (value, maxLength = 1200) => {
   if (text.length <= maxLength) return text;
   return `${text.slice(0, maxLength - 1)}...`;
 };
-
-const isMissingTableError = (error, tableName) =>
-  error?.code === '42P01' || new RegExp(String(tableName || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i').test(error?.message || '');
 
 const supportUrl = (pathName) =>
   `${CONFIG.FRONTEND_URL}${String(pathName || '/support').startsWith('/') ? '' : '/'}${pathName || '/support'}`;
@@ -2127,7 +2089,7 @@ const serializeAdminAccountInsight = (row = {}) => {
   };
 };
 
-const serializeAdminUserInsight = ({ userId, profile = {}, license = {}, activity = {}, tickets = {}, feedback = {}, accounts = [], streak = {} }) => ({
+const serializeAdminUserInsight = ({ userId, profile = {}, license = {}, activity = {}, tickets = {}, feedback = {}, accounts = [], streak = null }) => ({
   userId,
   email: profile.email || license.email || '',
   name: profile.full_name || profile.nickname || profile.email || license.email || 'Trader',
@@ -2149,132 +2111,287 @@ const serializeAdminUserInsight = ({ userId, profile = {}, license = {}, activit
   accountCount: accounts.length,
   totalBalance: accounts.reduce((sum, account) => sum + (Number(account.balance) || 0), 0),
   totalEquity: accounts.reduce((sum, account) => sum + (Number(account.equity) || 0), 0),
-  streak: serializeStreak(streak || { user_id: userId, timezone: profile.timezone || CONFIG.STREAK_TIMEZONE }),
+  streak: streak ? serializeTradingStreak(streak, { timezone: streak.timezone || CONFIG.STREAK_TIMEZONE }) : null,
 });
 
-const getAdminInsightsWeekKey = () => {
-  let ymd = getBusinessDateParts(new Date(), CONFIG.STREAK_TIMEZONE).ymd;
-  while (new Date(`${ymd}T00:00:00Z`).getUTCDay() !== 0) {
-    ymd = addDaysYmd(ymd, -1);
-  }
-  return ymd;
-};
+const STREAK_MILESTONES = [5, 30, 60, 100, 200, 365];
 
-const loadAdminInsightsCacheFile = () => {
+const cleanTimezone = (value) => {
+  const candidate = String(value || CONFIG.STREAK_TIMEZONE || 'UTC').trim();
   try {
-    const payload = JSON.parse(fs.readFileSync(CONFIG.ADMIN_INSIGHTS_CACHE_FILE, 'utf8'));
-    return payload && typeof payload === 'object' ? payload : {};
+    new Intl.DateTimeFormat('en-US', { timeZone: candidate }).format(new Date());
+    return candidate;
   } catch {
-    return {};
+    return 'UTC';
   }
 };
 
-const saveAdminInsightsCacheFile = (weekKey, payload) => {
-  safeWriteJSONFile(CONFIG.ADMIN_INSIGHTS_CACHE_FILE, {
-    week_key: weekKey,
-    updated_at: new Date().toISOString(),
-    payload: cloneJSON(payload),
+const datePartsForTimezone = (timezone, instant = new Date()) => {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: cleanTimezone(timezone),
+    weekday: 'short',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
   });
+  const parts = {};
+  for (const part of formatter.formatToParts(instant)) parts[part.type] = part.value;
+  return {
+    dateKey: `${parts.year}-${parts.month}-${parts.day}`,
+    monthKey: `${parts.year}-${parts.month}`,
+    weekday: parts.weekday || '',
+  };
 };
 
-const recomputeAdminInsightMetrics = (payload) => {
-  if (!payload?.metrics) return payload;
-  const accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
-  const liveAccounts = accounts.filter(account => account.environment === 'live');
-  const demoAccounts = accounts.filter(account => account.environment === 'demo');
-  payload.metrics.connectedAccounts = accounts.length;
-  payload.metrics.liveAccounts = liveAccounts.length;
-  payload.metrics.demoAccounts = demoAccounts.length;
-  payload.metrics.onlineAccounts = accounts.filter(account => account.online).length;
-  payload.metrics.totalTrackedBalance = accounts.reduce((sum, account) => sum + (Number(account.balance) || 0), 0);
-  payload.metrics.totalTrackedEquity = accounts.reduce((sum, account) => sum + (Number(account.equity) || 0), 0);
-  payload.metrics.liveTrackedBalance = liveAccounts.reduce((sum, account) => sum + (Number(account.balance) || 0), 0);
-  payload.metrics.demoTrackedBalance = demoAccounts.reduce((sum, account) => sum + (Number(account.balance) || 0), 0);
-  payload.metrics.liveTrackedEquity = liveAccounts.reduce((sum, account) => sum + (Number(account.equity) || 0), 0);
-  payload.metrics.demoTrackedEquity = demoAccounts.reduce((sum, account) => sum + (Number(account.equity) || 0), 0);
-  return payload;
+const shiftDateKey = (dateKey, days) => {
+  const date = new Date(`${dateKey}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 };
 
-const applyAdminAccountUpdateToCache = (account, userId) => {
-  if (!g_adminInsightsCache?.payload || !account?.accountId) return;
-  const payload = g_adminInsightsCache.payload;
-  const nextAccount = { ...account, userId };
-  const accounts = Array.isArray(payload.accounts) ? payload.accounts.slice() : [];
-  const accountIdx = accounts.findIndex(row => row.accountId === account.accountId);
-  if (accountIdx >= 0) accounts[accountIdx] = { ...accounts[accountIdx], ...nextAccount };
-  else accounts.unshift(nextAccount);
-  payload.accounts = accounts;
+const isMarketDateKey = (dateKey) => {
+  const day = new Date(`${dateKey}T12:00:00Z`).getUTCDay();
+  return day !== 0 && day !== 6;
+};
 
-  if (userId && Array.isArray(payload.users)) {
-    payload.users = payload.users.map((user) => {
-      if (user.userId !== userId) return user;
-      const userAccounts = Array.isArray(user.accounts) ? user.accounts.slice() : [];
-      const userAccountIdx = userAccounts.findIndex(row => row.accountId === account.accountId);
-      if (userAccountIdx >= 0) userAccounts[userAccountIdx] = { ...userAccounts[userAccountIdx], ...account };
-      else userAccounts.unshift(account);
-      return serializeAdminUserInsight({
-        userId,
-        profile: {
-          email: user.email,
-          full_name: user.name,
-          avatar_url: user.avatar,
-        },
-        license: {
-          plan_mode: user.planMode,
-          license_status: user.licenseStatus,
-          trial_started_at: user.trialStartedAt,
-          trial_ends_at: user.trialEndsAt,
-          grace_ends_at: user.graceEndsAt,
-          paid_until: user.paidUntil,
-        },
-        activity: {
-          lastSeenAt: user.lastSeenAt,
-          pageViewsToday: user.pageViewsToday,
-          mostUsedPage: user.mostUsedPage,
-        },
-        tickets: {
-          open: user.openTickets,
-          pending: user.pendingTickets,
-        },
-        feedback: {
-          count: user.feedbackCount,
-          latestScore: user.latestFeedbackScore,
-        },
-        accounts: userAccounts,
-        streak: user.streak || {},
-      });
-    });
+const previousMarketDateKey = (dateKey) => {
+  let cursor = shiftDateKey(dateKey, -1);
+  for (let i = 0; i < 7; i += 1) {
+    if (isMarketDateKey(cursor)) return cursor;
+    cursor = shiftDateKey(cursor, -1);
+  }
+  return shiftDateKey(dateKey, -1);
+};
+
+const countMissedMarketDays = (lastActiveDate, today) => {
+  if (!lastActiveDate || lastActiveDate >= today) return 0;
+  let count = 0;
+  let cursor = shiftDateKey(lastActiveDate, 1);
+  for (let i = 0; i < 370 && cursor < today; i += 1) {
+    if (isMarketDateKey(cursor)) count += 1;
+    cursor = shiftDateKey(cursor, 1);
+  }
+  return count;
+};
+
+const parseMilestonesSent = (value) => {
+  if (Array.isArray(value)) return value.map(Number).filter(Number.isFinite);
+  if (typeof value === 'string') {
+    try { return parseMilestonesSent(JSON.parse(value)); } catch { return []; }
+  }
+  return [];
+};
+
+const restoreLimitForStreak = (currentStreak) =>
+  Number(currentStreak || 0) >= CONFIG.STREAK_ADVANCED_DAYS
+    ? CONFIG.STREAK_ADVANCED_RESTORES
+    : CONFIG.STREAK_BASE_RESTORES;
+
+const consistencyLabelForStreak = (currentStreak) => {
+  if (currentStreak >= 100) return 'elite';
+  if (currentStreak >= 30) return 'disciplined';
+  if (currentStreak >= 5) return 'building';
+  return 'new';
+};
+
+const nextStreakMilestone = (currentStreak) =>
+  STREAK_MILESTONES.find(days => days > Number(currentStreak || 0)) || null;
+
+const serializeTradingStreak = (row = {}, options = {}) => {
+  const timezone = cleanTimezone(options.timezone || row.timezone);
+  const { dateKey: today, monthKey, weekday } = datePartsForTimezone(timezone);
+  const marketDay = !['Sat', 'Sun'].includes(weekday);
+  const lastActiveDate = row.last_active_date || null;
+  const currentStreak = Math.max(0, Number(row.current_streak) || 0);
+  const restoreLimit = restoreLimitForStreak(Math.max(currentStreak, Number(row.restore_limit) || 0));
+  const restoresUsedThisMonth = row.monthly_restore_period === monthKey
+    ? Math.max(0, Number(row.monthly_restore_count) || 0)
+    : 0;
+  const activeSessionMs = Math.max(0, Number(options.activeSessionMs) || 0);
+  const requiredActiveMs = Math.max(1, CONFIG.STREAK_REQUIRED_ACTIVE_MS);
+  const active = marketDay && lastActiveDate === today && row.status === 'active';
+
+  return {
+    currentStreak,
+    longestStreak: Math.max(currentStreak, Number(row.longest_streak) || 0),
+    active,
+    fireState: marketDay ? (active ? 'burning' : 'dull') : 'paused',
+    status: marketDay ? (active ? 'active' : (row.status || 'inactive')) : 'paused',
+    activationPending: marketDay && !active,
+    requiredActiveMs,
+    activeSessionMs,
+    activationProgress: Math.min(1, activeSessionMs / requiredActiveMs),
+    today,
+    timezone,
+    marketDay,
+    marketPaused: !marketDay,
+    lastActiveDate,
+    lastSeenAt: row.last_seen_at || null,
+    restoreLimit,
+    restoresUsedThisMonth,
+    restoresRemaining: Math.max(0, restoreLimit - restoresUsedThisMonth),
+    totalRestoresUsed: Math.max(0, Number(row.total_restores_used) || 0),
+    monthlyRestorePeriod: row.monthly_restore_period || monthKey,
+    nextMilestone: nextStreakMilestone(currentStreak),
+    milestonesSent: parseMilestonesSent(row.milestones_sent),
+    consistencyLabel: consistencyLabelForStreak(currentStreak),
+    restored: Boolean(options.restored),
+    lost: Boolean(options.lost),
+    restoresUsed: Math.max(0, Number(options.restoresUsed) || 0),
+    milestoneAchieved: options.milestoneAchieved || null,
+  };
+};
+
+const isMissingStreakTable = (error) =>
+  error?.code === '42P01' || /tradevault_user_streaks|tradevault_streak_events/i.test(error?.message || '');
+
+const loadStreakRow = async (userId) => {
+  const { data, error } = await dbFrom(STREAK_TABLE)
+    .select('*')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  return data || null;
+};
+
+const recordStreakEvent = async (row) => {
+  const { error } = await dbFrom(STREAK_EVENT_TABLE).insert(row);
+  if (error && !isMissingStreakTable(error)) logDbError(`streak event:${row.user_id}`, error);
+};
+
+const applyStreakCheckIn = async (req) => {
+  const body = req.body || {};
+  const metadata = body.metadata && typeof body.metadata === 'object' && !Array.isArray(body.metadata)
+    ? body.metadata
+    : {};
+  const timezone = cleanTimezone(
+    body.timezone ||
+    metadata.timezone ||
+    req.headers['x-fap-timezone'] ||
+    req.headers['x-timezone'] ||
+    CONFIG.STREAK_TIMEZONE,
+  );
+  const { dateKey: today, monthKey, weekday } = datePartsForTimezone(timezone);
+  const marketDay = !['Sat', 'Sun'].includes(weekday);
+  const nowIso = new Date().toISOString();
+  const activeSessionMs = Math.max(0, Number(metadata.activeSessionMs || body.activeSessionMs) || 0);
+  const shouldActivate = marketDay && activeSessionMs >= Math.max(1, CONFIG.STREAK_REQUIRED_ACTIVE_MS);
+
+  const existing = await loadStreakRow(req.user.id);
+  const base = existing || {
+    user_id: req.user.id,
+    current_streak: 0,
+    longest_streak: 0,
+    monthly_restore_count: 0,
+    total_restores_used: 0,
+    restore_limit: CONFIG.STREAK_BASE_RESTORES,
+    milestones_sent: [],
+  };
+
+  let row = {
+    ...base,
+    user_id: req.user.id,
+    timezone,
+    last_seen_at: nowIso,
+    updated_at: nowIso,
+  };
+  let restored = false;
+  let lost = false;
+  let restoresUsed = 0;
+  let milestoneAchieved = null;
+
+  if (!marketDay) {
+    row.status = 'paused';
+  } else if (row.last_active_date === today) {
+    row.status = 'active';
+  } else if (!shouldActivate) {
+    row.status = row.current_streak > 0 ? 'pending' : 'inactive';
+  } else {
+    const lastActiveDate = row.last_active_date || null;
+    const previousMarketDate = previousMarketDateKey(today);
+    const currentBefore = Math.max(0, Number(row.current_streak) || 0);
+    const samePeriod = row.monthly_restore_period === monthKey;
+    const currentMonthlyRestoreCount = samePeriod ? Math.max(0, Number(row.monthly_restore_count) || 0) : 0;
+    const restoreLimit = restoreLimitForStreak(currentBefore);
+    let nextCurrent = 1;
+    let nextMonthlyRestoreCount = currentMonthlyRestoreCount;
+    let nextTotalRestores = Math.max(0, Number(row.total_restores_used) || 0);
+
+    if (!lastActiveDate) {
+      nextCurrent = 1;
+    } else if (lastActiveDate === previousMarketDate) {
+      nextCurrent = currentBefore + 1;
+    } else {
+      const missed = countMissedMarketDays(lastActiveDate, today);
+      if (missed > 0 && currentBefore > 0 && currentMonthlyRestoreCount + missed <= restoreLimit) {
+        restored = true;
+        restoresUsed = missed;
+        nextCurrent = currentBefore + 1;
+        nextMonthlyRestoreCount += missed;
+        nextTotalRestores += missed;
+      } else {
+        lost = currentBefore > 0;
+        nextCurrent = 1;
+        nextMonthlyRestoreCount = 0;
+      }
+    }
+
+    const milestonesSent = parseMilestonesSent(row.milestones_sent);
+    if (STREAK_MILESTONES.includes(nextCurrent) && !milestonesSent.includes(nextCurrent)) {
+      milestonesSent.push(nextCurrent);
+      milestoneAchieved = {
+        days: nextCurrent,
+        title: `${nextCurrent}-day trading streak`,
+        message: 'Great discipline. You kept showing up on market days.',
+      };
+    }
+
+    row = {
+      ...row,
+      current_streak: nextCurrent,
+      longest_streak: Math.max(nextCurrent, Number(row.longest_streak) || 0),
+      last_active_date: today,
+      status: 'active',
+      monthly_restore_period: monthKey,
+      monthly_restore_count: nextMonthlyRestoreCount,
+      total_restores_used: nextTotalRestores,
+      restore_limit: restoreLimitForStreak(nextCurrent),
+      milestones_sent: milestonesSent,
+    };
   }
 
-  payload.generatedAt = new Date().toISOString();
-  recomputeAdminInsightMetrics(payload);
-};
+  const { data, error } = await dbFrom(STREAK_TABLE)
+    .upsert(row, { onConflict: 'user_id' })
+    .select('*')
+    .maybeSingle();
+  if (error) throw error;
 
-const scheduleAdminAccountUpdate = (state, reason = 'live') => {
-  if (!state?.accountId) return;
-  const accountId = String(state.accountId);
-  if (g_adminAccountUpdateTimers.has(accountId)) return;
-  const delayMs = ['online', 'offline', 'status'].includes(reason) ? 0 : 1500;
-  const timer = setTimeout(() => {
-    g_adminAccountUpdateTimers.delete(accountId);
-    const ownerId = getAccountOwner(accountId);
-    const account = {
-      ...serializeAdminAccountInsight({ account_id: accountId }),
-      userId: ownerId,
-    };
-    applyAdminAccountUpdateToCache(account, ownerId);
-    io.to('support:agents').emit('ADMIN_ACCOUNT_UPDATE', {
-      type: 'ADMIN_ACCOUNT_UPDATE',
-      data: {
-        account,
-        userId: ownerId,
-        accountId,
-        reason,
-        generatedAt: new Date().toISOString(),
+  const saved = data || row;
+  if (shouldActivate && marketDay) {
+    recordStreakEvent({
+      user_id: req.user.id,
+      event_type: saved.last_active_date === today ? 'check_in' : 'seen',
+      activity_date: today,
+      streak_count: Math.max(0, Number(saved.current_streak) || 0),
+      used_restore: restored,
+      restores_used: restoresUsed,
+      metadata: {
+        source: cleanSupportText(metadata.source || body.source || 'site_open', 80),
+        pagePath: cleanSupportText(metadata.pagePath || body.pagePath || '', 240),
+        activeSessionMs,
       },
-    });
-  }, delayMs);
-  g_adminAccountUpdateTimers.set(accountId, timer);
+      created_at: nowIso,
+    }).catch(err => logDbError(`streak event:${req.user.id}`, err));
+  }
+
+  return serializeTradingStreak(saved, {
+    timezone,
+    activeSessionMs,
+    restored,
+    lost,
+    restoresUsed,
+    milestoneAchieved,
+  });
 };
 
 const loadSupportTicket = async (ticketId) => {
@@ -2290,39 +2407,23 @@ const loadSupportMessages = async (ticketId) => {
   const { data, error } = await dbFrom(SUPPORT_MESSAGE_TABLE)
     .select('id,ticket_id,user_id,sender_role,body,attachment_url,created_at')
     .eq('ticket_id', String(ticketId || ''))
-    .order('created_at', { ascending: false })
-    .limit(200);
+    .order('created_at', { ascending: true });
   if (error) throw error;
-  return (data || []).slice().reverse().map(serializeSupportMessage);
+  return (data || []).map(serializeSupportMessage);
 };
 
 const loadSupportProfiles = async (userIds) => {
   const ids = [...new Set((userIds || []).filter(Boolean))];
   if (!ids.length) return new Map();
   const profiles = new Map();
-
-  const missing = [];
   for (const id of ids) {
-    const cached = cacheGet(g_supportProfileCache, id);
-    if (cached) {
-      profiles.set(id, cached);
-    } else {
-      missing.push(id);
-    }
-  }
-
-  for (let i = 0; i < missing.length; i += 100) {
-    const batch = missing.slice(i, i + 100);
     const { data, error } = await dbFrom('tradevault_user_profiles')
-      .select('user_id,email,full_name,avatar_url,nickname,timezone')
-      .in('user_id', batch);
+      .select('user_id,email,full_name,avatar_url,nickname')
+      .eq('user_id', id)
+      .maybeSingle();
     if (error) throw error;
-    for (const row of data || []) {
-      cacheSet(g_supportProfileCache, row.user_id, row, CONFIG.SUPPORT_PROFILE_CACHE_MS);
-      profiles.set(row.user_id, row);
-    }
+    if (data) profiles.set(data.user_id, data);
   }
-
   return profiles;
 };
 
@@ -2544,663 +2645,6 @@ const sendCustomerSupportEmail = async ({ ticket, body }) => {
   });
 };
 
-const STREAK_MILESTONES = [5, 10, 30, 60, 100, 200, 365];
-
-const getBusinessDateParts = (date = new Date(), timezone = CONFIG.STREAK_TIMEZONE) => {
-  let safeTimezone = timezone || CONFIG.STREAK_TIMEZONE;
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: safeTimezone }).format(date);
-  } catch {
-    safeTimezone = CONFIG.STREAK_TIMEZONE;
-  }
-
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: safeTimezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    weekday: 'short',
-    hour: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(date).reduce((out, part) => {
-    if (part.type !== 'literal') out[part.type] = part.value;
-    return out;
-  }, {});
-
-  const ymd = `${parts.year}-${parts.month}-${parts.day}`;
-  const weekdayIndex = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[parts.weekday] ?? new Date(`${ymd}T00:00:00Z`).getUTCDay();
-  return {
-    ymd,
-    weekday: parts.weekday,
-    weekdayIndex,
-    hour: Number(parts.hour || 0),
-    monthPeriod: `${parts.year}-${parts.month}`,
-    timezone: safeTimezone,
-  };
-};
-
-const addDaysYmd = (ymd, delta) => {
-  const [year, month, day] = String(ymd || '').slice(0, 10).split('-').map(Number);
-  const date = new Date(Date.UTC(year || 1970, (month || 1) - 1, day || 1));
-  date.setUTCDate(date.getUTCDate() + delta);
-  return date.toISOString().slice(0, 10);
-};
-
-const isMarketDateYmd = (ymd) => {
-  const day = new Date(`${String(ymd || '').slice(0, 10)}T00:00:00Z`).getUTCDay();
-  return day !== 0 && day !== 6;
-};
-
-const countMissedMarketDays = (lastActiveDate, todayYmd) => {
-  const last = String(lastActiveDate || '').slice(0, 10);
-  const today = String(todayYmd || '').slice(0, 10);
-  if (!last || !today || last >= today) return 0;
-
-  let count = 0;
-  let cursor = addDaysYmd(last, 1);
-  while (cursor < today) {
-    if (isMarketDateYmd(cursor)) count++;
-    cursor = addDaysYmd(cursor, 1);
-  }
-  return count;
-};
-
-const getRestoreLimitForStreak = (currentStreak = 0, longestStreak = 0) =>
-  Math.max(currentStreak, longestStreak) >= CONFIG.STREAK_ADVANCED_DAYS
-    ? CONFIG.STREAK_ADVANCED_RESTORES
-    : CONFIG.STREAK_BASE_RESTORES;
-
-const normalizeMilestones = (value) => {
-  if (Array.isArray(value)) return value.map(Number).filter(Number.isFinite);
-  if (typeof value === 'string') {
-    try { return normalizeMilestones(JSON.parse(value)); } catch { return []; }
-  }
-  return [];
-};
-
-const serializeStreak = (row = {}, extra = {}) => {
-  const timezone = row.timezone || extra.timezone || CONFIG.STREAK_TIMEZONE;
-  const parts = getBusinessDateParts(new Date(), timezone);
-  const lastActiveDate = String(row.last_active_date || '').slice(0, 10) || null;
-  const currentStreak = Number(row.current_streak || 0);
-  const longestStreak = Number(row.longest_streak || 0);
-  const restoreLimit = Number(row.restore_limit || getRestoreLimitForStreak(currentStreak, longestStreak));
-  const restoresUsedThisMonth = Number(row.monthly_restore_count || 0);
-  const marketDay = isMarketDateYmd(parts.ymd);
-  const active = marketDay && lastActiveDate === parts.ymd;
-  const nextMilestone = STREAK_MILESTONES.find(milestone => currentStreak < milestone) || null;
-  const requiredActiveMs = Math.max(0, Number(firstValue(extra.requiredActiveMs, CONFIG.STREAK_REQUIRED_ACTIVE_MS)) || 0);
-  const activeSessionMs = Math.max(0, Number(firstValue(extra.activeSessionMs, extra.activeMs, 0)) || 0);
-  const activationProgress = requiredActiveMs > 0 ? Math.min(1, activeSessionMs / requiredActiveMs) : 1;
-
-  return {
-    currentStreak,
-    longestStreak,
-    active,
-    fireState: active ? 'burning' : 'dull',
-    status: row.status || (active ? 'active' : 'inactive'),
-    activationPending: !active && row.status === 'pending',
-    requiredActiveMs,
-    activeSessionMs,
-    activationProgress,
-    today: parts.ymd,
-    timezone: parts.timezone,
-    marketDay,
-    marketPaused: !marketDay,
-    lastActiveDate,
-    lastSeenAt: row.last_seen_at || null,
-    restoreLimit,
-    restoresUsedThisMonth,
-    restoresRemaining: Math.max(0, restoreLimit - restoresUsedThisMonth),
-    totalRestoresUsed: Number(row.total_restores_used || 0),
-    monthlyRestorePeriod: row.monthly_restore_period || parts.monthPeriod,
-    nextMilestone,
-    milestonesSent: normalizeMilestones(row.milestones_sent),
-    consistencyLabel: row.status === 'lost' ? 'inconsistent' : currentStreak > 0 ? 'consistent' : 'not_started',
-    ...extra,
-  };
-};
-
-const loadStreakRow = async (userId) => {
-  const { data, error } = await dbFrom(STREAK_TABLE)
-    .select('user_id,current_streak,longest_streak,last_active_date,last_seen_at,timezone,status,monthly_restore_period,monthly_restore_count,total_restores_used,restore_limit,milestones_sent,created_at,updated_at')
-    .eq('user_id', userId)
-    .maybeSingle();
-  if (error) throw error;
-  return data || null;
-};
-
-const recordStreakEvent = async ({ userId, eventType, activityDate, streakCount, usedRestore = false, restoresUsed = 0, metadata = {} }) => {
-  const { error } = await dbFrom(STREAK_EVENT_TABLE).insert({
-    user_id: userId,
-    event_type: eventType,
-    activity_date: activityDate || null,
-    streak_count: streakCount || 0,
-    used_restore: !!usedRestore,
-    restores_used: restoresUsed || 0,
-    metadata,
-    created_at: new Date().toISOString(),
-  });
-  if (error && !isMissingTableError(error, STREAK_EVENT_TABLE)) throw error;
-};
-
-const recordStreakCheckIn = async (user, metadata = {}, timezone = CONFIG.STREAK_TIMEZONE) => {
-  if (!supabase || !user?.id) return { streak: serializeStreak(), databaseDisabled: true };
-
-  const parts = getBusinessDateParts(new Date(), timezone);
-  const nowIso = new Date().toISOString();
-  const source = cleanSupportText(metadata.source || 'site_open', 80);
-  const requiredActiveMs = Math.max(0, Number(CONFIG.STREAK_REQUIRED_ACTIVE_MS) || 0);
-  const activeSessionMs = Math.max(0, Number(firstValue(
-    metadata.activeSessionMs,
-    metadata.activeMs,
-    metadata.durationMs,
-    metadata.engagedMs,
-    0,
-  )) || 0);
-  const meetsEngagementRequirement = activeSessionMs >= requiredActiveMs;
-  const existing = await loadStreakRow(user.id);
-  const row = existing || {
-    user_id: user.id,
-    current_streak: 0,
-    longest_streak: 0,
-    last_active_date: null,
-    timezone: parts.timezone,
-    monthly_restore_period: parts.monthPeriod,
-    monthly_restore_count: 0,
-    total_restores_used: 0,
-    milestones_sent: [],
-  };
-
-  let currentStreak = Number(row.current_streak || 0);
-  let longestStreak = Number(row.longest_streak || 0);
-  let monthlyRestorePeriod = row.monthly_restore_period || parts.monthPeriod;
-  let monthlyRestoreCount = Number(row.monthly_restore_count || 0);
-  let totalRestoresUsed = Number(row.total_restores_used || 0);
-  let milestonesSent = normalizeMilestones(row.milestones_sent);
-  let lastActiveDate = String(row.last_active_date || '').slice(0, 10) || null;
-  let status = row.status || 'inactive';
-  let restored = false;
-  let lost = false;
-  let restoresUsed = 0;
-  let milestoneAchieved = null;
-
-  if (monthlyRestorePeriod !== parts.monthPeriod) {
-    monthlyRestorePeriod = parts.monthPeriod;
-    monthlyRestoreCount = 0;
-  }
-
-  let restoreLimit = getRestoreLimitForStreak(currentStreak, longestStreak);
-
-  if (!isMarketDateYmd(parts.ymd)) {
-    status = currentStreak > 0 ? 'weekend_pause' : 'inactive';
-  } else if (lastActiveDate === parts.ymd) {
-    status = 'active';
-  } else if (!meetsEngagementRequirement) {
-    status = 'pending';
-  } else {
-    const previousStreak = currentStreak;
-    const missedMarketDays = lastActiveDate ? countMissedMarketDays(lastActiveDate, parts.ymd) : 0;
-
-    if (!lastActiveDate || currentStreak <= 0) {
-      currentStreak = 1;
-      status = 'active';
-    } else if (missedMarketDays === 0) {
-      currentStreak += 1;
-      status = 'active';
-    } else if (monthlyRestoreCount + missedMarketDays <= restoreLimit) {
-      restored = true;
-      restoresUsed = missedMarketDays;
-      monthlyRestoreCount += missedMarketDays;
-      totalRestoresUsed += missedMarketDays;
-      currentStreak += 1;
-      status = 'restored';
-    } else {
-      lost = true;
-      currentStreak = 1;
-      status = 'lost';
-    }
-
-    lastActiveDate = parts.ymd;
-    longestStreak = Math.max(longestStreak, currentStreak);
-    restoreLimit = getRestoreLimitForStreak(currentStreak, longestStreak);
-
-    const milestone = STREAK_MILESTONES.find(value => currentStreak >= value && previousStreak < value && !milestonesSent.includes(value));
-    if (milestone) {
-      milestonesSent = [...milestonesSent, milestone];
-      milestoneAchieved = {
-        days: milestone,
-        title: `${milestone} day trading streak`,
-        message: `Congratulations. You have opened ForexAnalyzer Pro for ${milestone} trading days and kept your trading routine alive.`,
-      };
-    }
-  }
-
-  const payload = {
-    user_id: user.id,
-    current_streak: currentStreak,
-    longest_streak: longestStreak,
-    last_active_date: lastActiveDate,
-    last_seen_at: nowIso,
-    timezone: parts.timezone,
-    status,
-    monthly_restore_period: monthlyRestorePeriod,
-    monthly_restore_count: monthlyRestoreCount,
-    total_restores_used: totalRestoresUsed,
-    restore_limit: restoreLimit,
-    milestones_sent: milestonesSent,
-    created_at: existing?.created_at || nowIso,
-    updated_at: nowIso,
-  };
-
-  const { data, error } = await dbFrom(STREAK_TABLE)
-    .upsert(payload, { onConflict: 'user_id' })
-    .select('user_id,current_streak,longest_streak,last_active_date,last_seen_at,timezone,status,monthly_restore_period,monthly_restore_count,total_restores_used,restore_limit,milestones_sent,created_at,updated_at')
-    .maybeSingle();
-  if (error) throw error;
-
-  await recordStreakEvent({
-    userId: user.id,
-    eventType: !isMarketDateYmd(parts.ymd) ? 'weekend_visit' : status === 'pending' ? 'streak_pending' : lost ? 'streak_lost' : restored ? 'streak_restored' : 'check_in',
-    activityDate: parts.ymd,
-    streakCount: currentStreak,
-    usedRestore: restored,
-    restoresUsed,
-    metadata: {
-      ...metadata,
-      source,
-      activeSessionMs,
-      requiredActiveMs,
-      activationProgress: requiredActiveMs > 0 ? Math.min(1, activeSessionMs / requiredActiveMs) : 1,
-    },
-  }).catch(err => logDbError(`streak event:${user.id}`, err));
-
-  return {
-    streak: serializeStreak(data || payload, {
-      restored,
-      lost,
-      restoresUsed,
-      milestoneAchieved,
-      activeSessionMs,
-      requiredActiveMs,
-      activationPending: status === 'pending',
-      activationProgress: requiredActiveMs > 0 ? Math.min(1, activeSessionMs / requiredActiveMs) : 1,
-    }),
-  };
-};
-
-const hasEmailLog = async (dedupeKey) => {
-  const { data, error } = await dbFrom(EMAIL_LOG_TABLE)
-    .select('id')
-    .eq('dedupe_key', dedupeKey)
-    .maybeSingle();
-  if (error) {
-    if (isMissingTableError(error, EMAIL_LOG_TABLE)) return true;
-    throw error;
-  }
-  return !!data;
-};
-
-const getLatestEmailLog = async (userId, emailType) => {
-  const { data, error } = await dbFrom(EMAIL_LOG_TABLE)
-    .select('id,sent_at')
-    .eq('user_id', userId)
-    .eq('email_type', emailType)
-    .order('sent_at', { ascending: false })
-    .limit(1);
-  if (error) {
-    if (isMissingTableError(error, EMAIL_LOG_TABLE)) return null;
-    throw error;
-  }
-  return data?.[0] || null;
-};
-
-const markEmailSent = async ({ userId, email, emailType, dedupeKey, metadata = {} }) => {
-  const { error } = await dbFrom(EMAIL_LOG_TABLE).insert({
-    user_id: userId || null,
-    email: email || null,
-    email_type: emailType,
-    dedupe_key: dedupeKey,
-    metadata,
-    sent_at: new Date().toISOString(),
-  });
-  if (error && !isMissingTableError(error, EMAIL_LOG_TABLE) && error.code !== '23505') throw error;
-};
-
-const sendDedupeEmail = async ({ userId, email, emailType, dedupeKey, metadata, build }) => {
-  if (!email || !CONFIG.RETENTION_EMAILS_ENABLED) return false;
-  if (await hasEmailLog(dedupeKey)) return false;
-  await sendResendEmail(build());
-  await markEmailSent({ userId, email, emailType, dedupeKey, metadata });
-  return true;
-};
-
-const sendNoAccountHelpEmail = (profile, reason = 'three_hour_setup_help') =>
-  sendDedupeEmail({
-    userId: profile.user_id,
-    email: profile.email,
-    emailType: 'no_account_help',
-    dedupeKey: `no-account-help:${profile.user_id}`,
-    metadata: { reason },
-    build: () => ({
-      to: profile.email,
-      subject: 'Need help connecting your ForexAnalyzer Pro account?',
-      text: [
-        `Hi ${profile.full_name || profile.nickname || 'Trader'},`,
-        '',
-        'I noticed your ForexAnalyzer Pro login is ready, but no trading account is connected yet.',
-        'If the EA setup, API key, or MetaTrader WebRequest step is confusing, reply or open Support and we will help you one-on-one for free.',
-        '',
-        'Quick setup:',
-        '1. Open ForexAnalyzer Pro and go to Connect Account.',
-        '2. Generate or copy your EA API key.',
-        `3. In MetaTrader, whitelist this WebRequest URL: ${CONFIG.PUBLIC_BASE_URL}`,
-        '4. Attach the EA, paste the key, enable Algo Trading, and click OK.',
-        '',
-        supportUrl('/support'),
-      ].join('\n'),
-      html: supportEmailShell({
-        title: 'Need help connecting your trading account?',
-        intro: 'Your login is active, but we do not see a connected MetaTrader account yet. We can help you get set up one-on-one for free.',
-        rows: [
-          { label: 'WebRequest URL', value: CONFIG.PUBLIC_BASE_URL },
-          { label: 'Support', value: 'Free one-on-one setup help' },
-        ],
-        message: [
-          '1. Open ForexAnalyzer Pro and go to Connect Account.',
-          '2. Generate or copy your EA API key.',
-          `3. In MetaTrader, whitelist this WebRequest URL: ${CONFIG.PUBLIC_BASE_URL}`,
-          '4. Attach the EA to any chart, paste the key, enable Algo Trading, and click OK.',
-          '',
-          'If any step is unclear, open Support and we will guide you until the account is online.',
-        ].join('\n'),
-        ctaLabel: 'Get setup help',
-        ctaUrl: supportUrl('/support'),
-      }),
-      tags: [
-        { name: 'type', value: 'no_account_help' },
-        { name: 'user_id', value: String(profile.user_id || '').replace(/[^a-zA-Z0-9_-]/g, '_') },
-      ],
-      idempotencyKey: `no-account-help-${profile.user_id}`,
-    }),
-  });
-
-const sendStreakReminderEmail = (profile, streak, parts = getBusinessDateParts(new Date(), streak.timezone || profile.timezone || CONFIG.STREAK_TIMEZONE)) =>
-  sendDedupeEmail({
-    userId: profile.user_id,
-    email: profile.email,
-    emailType: 'streak_reminder',
-    dedupeKey: `streak-reminder:${profile.user_id}:${parts.ymd}`,
-    metadata: { currentStreak: streak.current_streak || 0, timezone: parts.timezone },
-    build: () => ({
-      to: profile.email,
-      subject: 'Your ForexAnalyzer Pro streak is waiting today',
-      text: [
-        `Hi ${profile.full_name || profile.nickname || 'Trader'},`,
-        '',
-        `Your ${streak.current_streak || 0}-day trading streak has not been activated today.`,
-        'Open ForexAnalyzer Pro before the trading day ends to keep your consistency streak alive.',
-        '',
-        supportUrl('/dashboard'),
-      ].join('\n'),
-      html: supportEmailShell({
-        title: 'Keep your trading streak alive',
-        intro: 'Consistency is one of the biggest edges a trader can build. Your streak is waiting for today.',
-        rows: [
-          { label: 'Current streak', value: `${streak.current_streak || 0} trading days` },
-          { label: 'Restores left', value: `${Math.max(0, (streak.restore_limit || CONFIG.STREAK_BASE_RESTORES) - (streak.monthly_restore_count || 0))} this month` },
-          { label: 'Your timezone', value: parts.timezone },
-        ],
-        message: 'Open ForexAnalyzer Pro today to activate your streak, review your dashboard, and stay in rhythm with your trading plan.',
-        ctaLabel: 'Activate streak',
-        ctaUrl: supportUrl('/dashboard'),
-      }),
-      tags: [
-        { name: 'type', value: 'streak_reminder' },
-        { name: 'user_id', value: String(profile.user_id || '').replace(/[^a-zA-Z0-9_-]/g, '_') },
-      ],
-      idempotencyKey: `streak-reminder-${profile.user_id}-${parts.ymd}`,
-    }),
-  });
-
-const sendMissYouEmail = (profile, lastSeenAt) =>
-  sendDedupeEmail({
-    userId: profile.user_id,
-    email: profile.email,
-    emailType: 'miss_you',
-    dedupeKey: `miss-you:${profile.user_id}:${getBusinessDateParts().ymd}`,
-    metadata: { lastSeenAt },
-    build: () => ({
-      to: profile.email,
-      subject: 'We miss you at ForexAnalyzer Pro',
-      text: [
-        `Hi ${profile.full_name || profile.nickname || 'Trader'},`,
-        '',
-        'We have not seen you in ForexAnalyzer Pro for more than a week, so this is a quick trading wellness check.',
-        'Are you facing any issue with your trading, EA connection, account setup, or the system itself?',
-        '',
-        'We are here to support your trading career. Open the dashboard or send us a support message and we will help.',
-        '',
-        supportUrl('/support'),
-      ].join('\n'),
-      html: supportEmailShell({
-        title: 'A quick trading wellness check',
-        intro: 'We have not seen you for more than a week. If trading or the system has been frustrating, we are here to help.',
-        rows: [
-          { label: 'Last seen', value: lastSeenAt ? new Date(lastSeenAt).toLocaleString('en-US', { timeZone: profile.timezone || CONFIG.STREAK_TIMEZONE }) : 'More than a week ago' },
-          { label: 'Support', value: 'Ask us anything about setup, EA connection, or your trading workflow' },
-        ],
-        message: 'Open ForexAnalyzer Pro to review your account, or contact support if something is blocking you. We want the platform to support your trading routine, not sit unused when you need help.',
-        ctaLabel: 'Open support',
-        ctaUrl: supportUrl('/support'),
-      }),
-      tags: [
-        { name: 'type', value: 'miss_you' },
-        { name: 'user_id', value: String(profile.user_id || '').replace(/[^a-zA-Z0-9_-]/g, '_') },
-      ],
-      idempotencyKey: `miss-you-${profile.user_id}-${getBusinessDateParts().ymd}`,
-    }),
-  });
-
-const loadRetentionProfiles = async () => {
-  const { data, error } = await dbFrom('tradevault_user_profiles')
-    .select('user_id,email,full_name,nickname,timezone,created_at,updated_at')
-    .order('updated_at', { ascending: false })
-    .limit(1000);
-  if (error) throw error;
-  return (data || []).filter(profile => profile.user_id && profile.email);
-};
-
-const getUserConnectedAccountCount = async (userId) => {
-  const memoryCount = [...g_accountOwners.values()].filter(ownerId => ownerId === userId).length;
-  const { data, error } = await dbFrom('tradevault_account_owners')
-    .select('account_id')
-    .eq('user_id', userId)
-    .limit(1);
-  if (error) {
-    if (isMissingTableError(error, 'tradevault_account_owners')) return memoryCount;
-    throw error;
-  }
-  return Math.max(memoryCount, data?.length || 0);
-};
-
-const getUserLastActivityAt = async (userId, fallback = null) => {
-  const { data, error } = await dbFrom(ACTIVITY_TABLE)
-    .select('created_at')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: false })
-    .limit(1);
-  if (error) {
-    if (isMissingTableError(error, ACTIVITY_TABLE)) return fallback;
-    throw error;
-  }
-  return data?.[0]?.created_at || fallback;
-};
-
-const runNoAccountHelpEmails = async ({ initialBlast = false } = {}) => {
-  const profiles = await loadRetentionProfiles();
-  const cutoffMs = Date.now() - CONFIG.NO_ACCOUNT_HELP_HOURS * 60 * 60 * 1000;
-
-  for (const profile of profiles) {
-    const accountCount = await getUserConnectedAccountCount(profile.user_id);
-    if (accountCount > 0) continue;
-    const createdMs = toMs(profile.created_at || profile.updated_at) || 0;
-    if (!initialBlast && createdMs > cutoffMs) continue;
-    await sendNoAccountHelpEmail(profile, initialBlast ? 'initial_zero_account_blast' : 'three_hour_setup_help');
-  }
-};
-
-const runStreakReminderEmails = async () => {
-  const { data, error } = await dbFrom(STREAK_TABLE)
-    .select('user_id,current_streak,last_active_date,monthly_restore_count,restore_limit,status,last_seen_at,timezone')
-    .order('last_seen_at', { ascending: false })
-    .limit(1000);
-  if (error) {
-    if (isMissingTableError(error, STREAK_TABLE)) return;
-    throw error;
-  }
-
-  const profiles = await loadSupportProfiles((data || []).map(row => row.user_id));
-  for (const streak of data || []) {
-    const profile = profiles.get(streak.user_id);
-    const parts = getBusinessDateParts(new Date(), streak.timezone || profile?.timezone || CONFIG.STREAK_TIMEZONE);
-    if (!isMarketDateYmd(parts.ymd) || parts.hour < CONFIG.STREAK_REMINDER_HOUR) continue;
-    if ((Number(streak.current_streak) || 0) <= 0) continue;
-    if (String(streak.last_active_date || '').slice(0, 10) === parts.ymd) continue;
-    if (!profile?.email) continue;
-    await sendStreakReminderEmail({ ...profile, user_id: streak.user_id }, streak, parts);
-  }
-};
-
-const runMissYouEmails = async () => {
-  const profiles = await loadRetentionProfiles();
-  const cutoffMs = Date.now() - CONFIG.MISS_YOU_AFTER_DAYS * DAY_MS;
-
-  for (const profile of profiles) {
-    const lastSeenAt = await getUserLastActivityAt(profile.user_id, profile.updated_at || profile.created_at);
-    const lastSeenMs = toMs(lastSeenAt) || 0;
-    if (lastSeenMs > cutoffMs) continue;
-    const latest = await getLatestEmailLog(profile.user_id, 'miss_you');
-    if (latest?.sent_at && (Date.now() - (toMs(latest.sent_at) || 0)) < CONFIG.MISS_YOU_AFTER_DAYS * DAY_MS) continue;
-    await sendMissYouEmail(profile, lastSeenAt);
-  }
-};
-
-const loadRetentionTicketsByStatus = async (status, cutoffIso, limit) => {
-  const { data, error } = await dbFrom(SUPPORT_TICKET_TABLE)
-    .select('id,user_id,account_id,category,priority,status,last_message_at,created_at,updated_at')
-    .eq('status', status)
-    .lte('updated_at', cutoffIso)
-    .order('updated_at', { ascending: true })
-    .limit(limit);
-  if (error) {
-    if (isMissingTableError(error, SUPPORT_TICKET_TABLE)) return [];
-    throw error;
-  }
-  return data || [];
-};
-
-const countSupportMessages = async (ticketId) => {
-  const { data, error } = await dbFrom(SUPPORT_MESSAGE_TABLE)
-    .select('id')
-    .eq('ticket_id', ticketId)
-    .limit(5000);
-  if (error) {
-    if (isMissingTableError(error, SUPPORT_MESSAGE_TABLE)) return 0;
-    throw error;
-  }
-  return data?.length || 0;
-};
-
-const archiveAndDeleteSupportTicket = async (ticket) => {
-  const messageCount = await countSupportMessages(ticket.id);
-  const { error: rollupError } = await dbFrom(SUPPORT_TICKET_ROLLUP_TABLE).upsert({
-    ticket_id: ticket.id,
-    user_id: ticket.user_id || null,
-    account_id: ticket.account_id || null,
-    category: ticket.category || 'general',
-    priority: ticket.priority || 'normal',
-    status: ticket.status || 'closed',
-    message_count: messageCount,
-    created_at: ticket.created_at || null,
-    last_message_at: ticket.last_message_at || ticket.updated_at || null,
-    archived_at: new Date().toISOString(),
-  }, { onConflict: 'ticket_id' });
-  if (rollupError) throw rollupError;
-
-  const messageDelete = await dbFrom(SUPPORT_MESSAGE_TABLE)
-    .delete()
-    .eq('ticket_id', ticket.id);
-  if (messageDelete.error && !isMissingTableError(messageDelete.error, SUPPORT_MESSAGE_TABLE)) {
-    throw messageDelete.error;
-  }
-
-  const ticketDelete = await dbFrom(SUPPORT_TICKET_TABLE)
-    .delete()
-    .eq('id', ticket.id);
-  if (ticketDelete.error) throw ticketDelete.error;
-
-  return { messageCount };
-};
-
-const runSupportConversationRetention = async () => {
-  if (!CONFIG.SUPPORT_RETENTION_ENABLED) return { archived: 0, messages: 0 };
-
-  const retentionDays = Math.max(1, Number(CONFIG.SUPPORT_CONVERSATION_RETENTION_DAYS) || 90);
-  const limit = Math.max(1, Math.min(Number(CONFIG.SUPPORT_RETENTION_DELETE_LIMIT) || 200, 1000));
-  const cutoffIso = new Date(Date.now() - retentionDays * DAY_MS).toISOString();
-  const rows = [
-    ...(await loadRetentionTicketsByStatus('resolved', cutoffIso, limit)),
-    ...(await loadRetentionTicketsByStatus('closed', cutoffIso, limit)),
-  ].slice(0, limit);
-
-  let archived = 0;
-  let messages = 0;
-  for (const ticket of rows) {
-    try {
-      const result = await archiveAndDeleteSupportTicket(ticket);
-      archived += 1;
-      messages += result.messageCount || 0;
-    } catch (error) {
-      if (isMissingTableError(error, SUPPORT_TICKET_ROLLUP_TABLE)) {
-        console.warn('[Retention] Support rollup table missing. Run latest supabase_schema.sql before conversation cleanup.');
-        return { archived, messages };
-      }
-      logDbError(`support retention:${ticket.id}`, error);
-    }
-  }
-
-  if (archived) {
-    console.log(`[Retention] Archived ${archived} solved support ticket(s) and removed ${messages} message row(s).`);
-  }
-  return { archived, messages };
-};
-
-const runRetentionEmailJobs = async (reason = 'interval') => {
-  if (!supabase || (!CONFIG.RETENTION_EMAILS_ENABLED && !CONFIG.SUPPORT_RETENTION_ENABLED) || g_retentionJobRunning) return;
-  g_retentionJobRunning = true;
-  try {
-    if (CONFIG.RETENTION_EMAILS_ENABLED) {
-      await runNoAccountHelpEmails({ initialBlast: CONFIG.RETENTION_INITIAL_NO_ACCOUNT_BLAST });
-      await runStreakReminderEmails();
-      await runMissYouEmails();
-    }
-    await runSupportConversationRetention();
-  } catch (error) {
-    logDbError(`retention jobs:${reason}`, error);
-  } finally {
-    g_retentionJobRunning = false;
-  }
-};
-
-const startRetentionEmailJobs = () => {
-  if (!supabase || (!CONFIG.RETENTION_EMAILS_ENABLED && !CONFIG.SUPPORT_RETENTION_ENABLED)) return;
-  const intervalMs = Math.max(5 * 60 * 1000, CONFIG.RETENTION_JOB_INTERVAL_MS);
-  setTimeout(() => runRetentionEmailJobs('startup'), 90 * 1000);
-  setInterval(() => runRetentionEmailJobs('interval'), intervalMs);
-  console.log(`[Retention] Jobs enabled. Interval: ${Math.round(intervalMs / 60000)} minute(s).`);
-};
-
 const cleanReferralCode = (value) =>
   String(value || '')
     .trim()
@@ -3328,9 +2772,6 @@ const applyReferralIfPresent = async (referredUser, rawCode) => {
 
 const getSupportAgent = async (userId, email = '', name = '') => {
   if (!userId) return null;
-  const cached = cacheGet(g_supportAgentCache, userId);
-  if (cached !== undefined) return cached;
-
   const configuredAdmin = isConfiguredSupportAdminEmail(email)
     ? {
         user_id: userId,
@@ -3347,12 +2788,10 @@ const getSupportAgent = async (userId, email = '', name = '') => {
     .maybeSingle();
   if (error) {
     const missingTable = error.code === '42P01' || /tradevault_support_agents/i.test(error.message || '');
-    if (missingTable && configuredAdmin) {
-      return cacheSet(g_supportAgentCache, userId, configuredAdmin, CONFIG.SUPPORT_AGENT_CACHE_MS);
-    }
+    if (missingTable && configuredAdmin) return configuredAdmin;
     throw error;
   }
-  return cacheSet(g_supportAgentCache, userId, data || configuredAdmin || null, CONFIG.SUPPORT_AGENT_CACHE_MS);
+  return data || configuredAdmin;
 };
 
 const requireSupportAgent = async (req, res) => {
@@ -3405,7 +2844,6 @@ const touchSupportTicket = async (ticketId, patch = {}) => {
 
 const notifySupportTicket = (type, ticket) => {
   if (!ticket) return;
-  clearAdminInsightsCache();
   io.to(`user:${ticket.user_id}`).emit(type, {
     type,
     data: { ticketId: ticket.id },
@@ -3469,10 +2907,9 @@ io.use(async (socket, next) => {
   return next();
 });
 
-io.on('connection', async (socket) => {
+io.on('connection', (socket) => {
   const userId = socket.user.id;
   socket.join(`user:${userId}`);
-  await restoreUserAccountsFromDatabase(userId, 'socket-init');
   getSupportAgent(userId, socket.user.email, socket.user.name)
     .then(agent => {
       if (agent) socket.join('support:agents');
@@ -3572,7 +3009,6 @@ const startOfflineDetector = (state) => {
       state.online = false;
       scheduleAccountSnapshotPersist(state, 0);
       broadcast('EA_OFFLINE', { accountId: state.accountId }, state.accountId);
-      scheduleAdminAccountUpdate(state, 'offline');
       console.log(`[Account] ${state.accountId} went offline (${(ageMs / 1000).toFixed(0)}s silent)`);
     }
   }, 2000);
@@ -3583,17 +3019,27 @@ const markEaOnline = (state) => {
   if (!state.online) {
     state.online = true;
     broadcast('EA_ONLINE', { accountId: state.accountId }, state.accountId);
-    scheduleAdminAccountUpdate(state, 'online');
     console.log(`[Account] ${state.accountId} came online`);
   }
 };
 
 // ─── EA Router ────────────────────────────────────────────────────────────────
 const persistAccountSnapshotNow = (state) => {
-  if (!state) return;
-  const row = accountSnapshotRowFromState(state);
-  persistLocalAccountSnapshotNow(state, row);
-  if (!supabase) return;
+  if (!state || !supabase) return;
+  const row = {
+    account_id: state.accountId,
+    owner_user_id: getAccountOwner(state.accountId),
+    config: cloneJSON(state.config),
+    raw_live_data: cloneJSON(state.rawLiveData),
+    raw_static_data: cloneJSON(state.rawStaticData),
+    processed_data: cloneJSON(state.processedData),
+    ea_status: cloneJSON(state.eaStatus),
+    push_counts: cloneJSON(state.pushCounts),
+    last_seen_ms: state.lastSeen,
+    last_settings_fetch_ms: state.lastSettingsFetch,
+    last_error: cloneJSON(state.lastError),
+    updated_at: new Date().toISOString(),
+  };
 
   runDbTask(`persist account snapshot:${state.accountId}`, async () => {
     const { error } = await dbFrom('tradevault_account_snapshots')
@@ -3619,193 +3065,6 @@ const buildHistorySignature = (processedData) => {
     return best;
   }, null);
   return `history:${history.length}:${last?.exitTime || 0}:${last?.ticket || ''}|open:${openTickets}`;
-};
-
-const accountSnapshotRowFromState = (state) => ({
-  account_id: state.accountId,
-  owner_user_id: getAccountOwner(state.accountId),
-  config: cloneJSON(state.config),
-  raw_live_data: null,
-  raw_static_data: null,
-  processed_data: cloneJSON(state.processedData),
-  ea_status: cloneJSON(state.eaStatus),
-  push_counts: cloneJSON(state.pushCounts),
-  last_seen_ms: state.lastSeen,
-  last_settings_fetch_ms: state.lastSettingsFetch,
-  last_error: cloneJSON(state.lastError),
-  updated_at: new Date().toISOString(),
-});
-
-const restoreAccountSnapshotRow = (row, fallbackOwnerId = null) => {
-  const accountId = String(row?.account_id || '');
-  if (!accountId) return false;
-  const ownerId = row.owner_user_id || fallbackOwnerId || getAccountOwner(accountId);
-  if ((ownerId && isAccountDeletedForUser(ownerId, accountId)) || isAccountDeletedByAnyUser(accountId)) {
-    return false;
-  }
-
-  if (!g_accounts.has(accountId)) {
-    registerAccount(accountId, row.config || {});
-  }
-  if (ownerId && !g_accountOwners.has(accountId)) {
-    g_accountOwners.set(accountId, ownerId);
-  }
-
-  const state = g_accounts.get(accountId);
-  Object.assign(state.config, row.config || {});
-  state.rawLiveData       = null;
-  state.rawStaticData     = null;
-  state.processedData     = row.processed_data || null;
-  state.eaStatus          = row.ea_status || null;
-  state.pushCounts        = row.push_counts || { live: 0, static: 0, status: 0 };
-  state.lastSeen          = row.last_seen_ms || null;
-  state.lastSettingsFetch = row.last_settings_fetch_ms || null;
-  state.lastError         = row.last_error || null;
-  state.online            = false;
-  if (state.processedData) {
-    g_historySignatures.set(accountId, buildHistorySignature(state.processedData));
-  }
-  return true;
-};
-
-const loadLocalAccountSnapshotStore = () => {
-  try {
-    const payload = JSON.parse(fs.readFileSync(CONFIG.ACCOUNT_SNAPSHOT_CACHE_FILE, 'utf8'));
-    return {
-      updated_at: payload?.updated_at || null,
-      accounts: payload?.accounts && typeof payload.accounts === 'object' ? payload.accounts : {},
-    };
-  } catch {
-    return { updated_at: null, accounts: {} };
-  }
-};
-
-const saveLocalAccountSnapshotStore = (store) => {
-  const accounts = store?.accounts && typeof store.accounts === 'object' ? store.accounts : {};
-  safeWriteJSONFile(CONFIG.ACCOUNT_SNAPSHOT_CACHE_FILE, {
-    updated_at: new Date().toISOString(),
-    accounts,
-  });
-};
-
-const persistLocalAccountSnapshotNow = (state, row = null) => {
-  if (!state?.accountId) return;
-  try {
-    const snapshotRow = row || accountSnapshotRowFromState(state);
-    const store = loadLocalAccountSnapshotStore();
-    store.accounts[String(state.accountId)] = snapshotRow;
-    saveLocalAccountSnapshotStore(store);
-  } catch (e) {
-    console.warn(`[Storage] Could not update local snapshot cache for ${state.accountId}: ${e.message}`);
-  }
-};
-
-const scheduleLocalAccountSnapshotPersist = (state, delayMs = CONFIG.LOCAL_SNAPSHOT_WRITE_INTERVAL_MS) => {
-  if (!state?.accountId) return;
-  const existing = g_localSnapshotPersistTimers.get(state.accountId);
-  if (existing) return;
-  const timer = setTimeout(() => {
-    g_localSnapshotPersistTimers.delete(state.accountId);
-    persistLocalAccountSnapshotNow(state);
-  }, Math.max(0, delayMs));
-  g_localSnapshotPersistTimers.set(state.accountId, timer);
-};
-
-const deleteLocalAccountSnapshot = (accountId) => {
-  const id = String(accountId || '');
-  if (!id) return;
-  const existing = g_localSnapshotPersistTimers.get(id);
-  if (existing) clearTimeout(existing);
-  g_localSnapshotPersistTimers.delete(id);
-  const store = loadLocalAccountSnapshotStore();
-  if (!store.accounts || !Object.prototype.hasOwnProperty.call(store.accounts, id)) return;
-  delete store.accounts[id];
-  saveLocalAccountSnapshotStore(store);
-};
-
-const restoreUserAccountsFromLocal = (userId, reason = 'local-cache') => {
-  if (!userId) return 0;
-  const store = loadLocalAccountSnapshotStore();
-  let restored = 0;
-  for (const row of Object.values(store.accounts || {})) {
-    if (String(row?.owner_user_id || '') !== String(userId)) continue;
-    if (restoreAccountSnapshotRow(row, userId)) restored++;
-  }
-  if (restored) {
-    console.log(`[Storage] Restored ${restored} local account snapshot(s) for user ${publicHash(userId)} (${reason}).`);
-  }
-  return restored;
-};
-
-const hydrateLocalAccountSnapshots = () => {
-  const store = loadLocalAccountSnapshotStore();
-  let restored = 0;
-  for (const row of Object.values(store.accounts || {})) {
-    if (restoreAccountSnapshotRow(row)) restored++;
-  }
-  console.log(`[Storage] Restored ${restored} local account snapshot(s).`);
-  return restored;
-};
-
-const restoreUserAccountsFromDatabase = async (userId, reason = 'on-demand') => {
-  if (!userId) return 0;
-
-  const cached = cacheGet(g_userAccountRestoreCache, userId);
-  if (cached !== undefined) return 0;
-  cacheSet(g_userAccountRestoreCache, userId, true, CONFIG.USER_ACCOUNT_RESTORE_CACHE_MS);
-
-  const localRestored = restoreUserAccountsFromLocal(userId, reason);
-  if (localRestored > 0 || !supabase) return localRestored;
-
-  try {
-    const { data: ownerRows, error: ownerError } = await dbFrom('tradevault_account_owners')
-      .select('account_id,user_id,claimed_at')
-      .eq('user_id', userId)
-      .order('claimed_at', { ascending: false })
-      .limit(CONFIG.USER_ACCOUNT_RESTORE_LIMIT);
-    if (ownerError) throw ownerError;
-
-    const accountIds = [];
-    for (const row of ownerRows || []) {
-      const accountId = String(row.account_id || '');
-      if (!accountId || isAccountDeletedForUser(userId, accountId)) continue;
-      g_accountOwners.set(accountId, userId);
-      accountIds.push(accountId);
-    }
-
-    const needsSnapshot = accountIds.filter((accountId) => {
-      const state = g_accounts.get(accountId);
-      return !state || !state.processedData;
-    });
-    if (!needsSnapshot.length) return 0;
-
-    const { data: snapshotRows, error: snapshotError } = await dbFrom('tradevault_account_snapshots')
-      .select('account_id,owner_user_id,config,processed_data,ea_status,push_counts,last_seen_ms,last_settings_fetch_ms,last_error,updated_at')
-      .in('account_id', needsSnapshot)
-      .order('updated_at', { ascending: false })
-      .limit(CONFIG.USER_ACCOUNT_RESTORE_LIMIT);
-    if (snapshotError) throw snapshotError;
-
-    const restoredIds = new Set();
-    for (const row of snapshotRows || []) {
-      const accountId = String(row.account_id || '');
-      if (!accountId || restoredIds.has(accountId)) continue;
-      if (restoreAccountSnapshotRow(row, userId)) {
-        restoredIds.add(accountId);
-        const state = g_accounts.get(accountId);
-        if (state) persistLocalAccountSnapshotNow(state, row);
-      }
-    }
-
-    if (restoredIds.size) {
-      console.log(`[Supabase] Restored ${restoredIds.size} account snapshot(s) for user ${publicHash(userId)} (${reason}).`);
-    }
-    return restoredIds.size;
-  } catch (e) {
-    logDbError(`restore user accounts:${publicHash(userId)}:${reason}`, e);
-    cacheDelete(g_userAccountRestoreCache, userId);
-    return 0;
-  }
 };
 
 const persistDurableTradingDataIfNeeded = (state, reason = 'live') => {
@@ -3839,11 +3098,10 @@ const scheduleAccountSnapshotPersist = (state, delayMs = CONFIG.DB_WRITE_DEBOUNC
 };
 
 const deleteAccountSnapshot = async (accountId) => {
+  if (!supabase) return;
   const existing = g_snapshotPersistTimers.get(accountId);
   if (existing) clearTimeout(existing);
   g_snapshotPersistTimers.delete(accountId);
-  deleteLocalAccountSnapshot(accountId);
-  if (!supabase) return;
   const { error } = await dbFrom('tradevault_account_snapshots')
     .delete()
     .eq('account_id', accountId);
@@ -3909,6 +3167,7 @@ eaRouter.use(async (req, res, next) => {
   const ownerId = await lookupEaKeyOwner(key);
   if (!ownerId) return res.status(401).json({ error: 'Unauthorized EA key' });
 
+  let license = null;
   const paidProof = readEaProductProof(req);
   if (wantsPaidEaAccess(paidProof)) {
     if (!CONFIG.PAID_EA_BUILD_TOKEN) {
@@ -3917,12 +3176,19 @@ eaRouter.use(async (req, res, next) => {
       });
     }
     if (!isValidPaidEaProof(paidProof)) {
-      return res.status(403).json({ error: 'Invalid paid EA build token' });
+      license = await ensureUserLicense({ id: ownerId, email: '' });
+      if (!license?.paid || !license?.hasFullAccess) {
+        return res.status(403).json({
+          error: 'Invalid paid EA proof. The paid EA must send the correct build token and a valid MQL5 Market paid/rental license.',
+          licenseType: normalizeEaLicenseType(paidProof) || null,
+        });
+      }
+    } else {
+      await markUserPaidFromEa(ownerId, paidProof);
     }
-    await markUserPaidFromEa(ownerId, paidProof);
   }
 
-  const license = await ensureUserLicense({ id: ownerId, email: '' });
+  if (!license) license = await ensureUserLicense({ id: ownerId, email: '' });
   if (!license?.hasFullAccess) {
     return res.status(402).json({
       error: 'Your ForexAnalyzer Pro free trial has ended. Upgrade on MQL5 to keep the EA connected.',
@@ -4022,8 +3288,6 @@ eaRouter.post('/live', async (req, res) => {
   try {
     state.processedData = processData(merged, accountId);
     broadcast('FULL_UPDATE', state.processedData, accountId);
-    scheduleLocalAccountSnapshotPersist(state);
-    scheduleAdminAccountUpdate(state, 'live');
 
     if (state.config.role === 'MASTER') {
       diffMasterPositions(state);
@@ -4061,8 +3325,6 @@ eaRouter.post('/static', async (req, res) => {
       };
       state.processedData = processData(merged, accountId);
       broadcast('STATIC_UPDATE', state.processedData, accountId);
-      scheduleLocalAccountSnapshotPersist(state);
-      scheduleAdminAccountUpdate(state, 'static');
     } catch (err) {
       state.lastError = { context: 'static', message: err.message, time: Date.now() };
     }
@@ -4085,8 +3347,6 @@ eaRouter.post('/status', async (req, res) => {
   state.eaStatus = req.body;
   state.pushCounts.status++;
   broadcast('STATUS_UPDATE', { accountId, status: req.body }, accountId);
-  scheduleLocalAccountSnapshotPersist(state);
-  scheduleAdminAccountUpdate(state, 'status');
   res.json({ ok: true, push_count: state.pushCounts.status });
 });
 
@@ -4577,8 +3837,6 @@ const syncDirectAccount = async (accountId, options = {}) => {
     state.online = true;
     state.lastError = null;
     state.pushCounts.live++;
-    scheduleLocalAccountSnapshotPersist(state);
-    scheduleAdminAccountUpdate(state, 'direct');
     persistDurableTradingDataIfNeeded(state, 'direct');
     if (options.broadcast !== false) {
       broadcast('FULL_UPDATE', state.processedData, id);
@@ -5026,7 +4284,7 @@ app.post('/api/public/feedback', async (req, res) => {
   try {
     const token = getBearerToken(req);
     const authUser = token ? await getAuthenticatedUser(token) : null;
-    if (authUser) upsertUserProfile(authUser, getRequestTimezone(req));
+    if (authUser) upsertUserProfile(authUser);
     const user = authUser ? sanitizeUser(authUser) : null;
 
     const rawScore = Number(req.body?.score);
@@ -5053,7 +4311,6 @@ app.post('/api/public/feedback', async (req, res) => {
       created_at: new Date().toISOString(),
     });
     if (error) throw error;
-    clearAdminInsightsCache();
     res.status(201).json({ success: true });
   } catch (error) {
     logDbError('public feedback', error);
@@ -5098,61 +4355,63 @@ app.post('/api/activity/page-view', async (req, res) => {
 });
 
 app.get('/api/streak/me', async (req, res) => {
-  if (!supabase) return res.json({ streak: serializeStreak(), databaseDisabled: true });
+  if (!supabase) {
+    return res.json({
+      databaseDisabled: true,
+      streak: serializeTradingStreak({}, { timezone: CONFIG.STREAK_TIMEZONE }),
+    });
+  }
 
   try {
+    const timezone = cleanTimezone(
+      req.headers['x-fap-timezone'] ||
+      req.query.timezone ||
+      CONFIG.STREAK_TIMEZONE,
+    );
     const row = await loadStreakRow(req.user.id);
-    res.json({ streak: serializeStreak(row || { user_id: req.user.id, timezone: getRequestTimezone(req) }) });
+    res.json({ streak: serializeTradingStreak(row || {}, { timezone }) });
   } catch (error) {
-    if (isMissingTableError(error, STREAK_TABLE)) {
-      return res.json({ streak: serializeStreak(), missingTable: true });
+    if (isMissingStreakTable(error)) {
+      return res.json({
+        missingTable: true,
+        streak: serializeTradingStreak({}, { timezone: CONFIG.STREAK_TIMEZONE }),
+      });
     }
     logDbError(`streak me:${req.user.id}`, error);
-    res.status(500).json({ error: error.message || 'Could not load streak' });
+    res.status(500).json({ error: error.message || 'Could not load trading streak' });
   }
 });
 
 app.post('/api/streak/check-in', async (req, res) => {
-  if (!supabase) return res.json({ streak: serializeStreak(), databaseDisabled: true });
+  if (!supabase) {
+    return res.json({
+      databaseDisabled: true,
+      streak: serializeTradingStreak({}, {
+        timezone: CONFIG.STREAK_TIMEZONE,
+        activeSessionMs: Number(req.body?.metadata?.activeSessionMs || 0),
+      }),
+    });
+  }
 
   try {
-    const metadata = req.body?.metadata && typeof req.body.metadata === 'object' && !Array.isArray(req.body.metadata)
-      ? req.body.metadata
-      : {};
-    const timezone = getRequestTimezone(req);
-    const result = await recordStreakCheckIn(req.user, {
-      source: cleanSupportText(metadata.source || 'site_open', 80),
-      pagePath: cleanSupportText(metadata.pagePath || metadata.page_path || '', 240),
-      activeSessionMs: Math.max(0, Number(firstValue(metadata.activeSessionMs, metadata.activeMs, metadata.durationMs, 0)) || 0),
-      timezone,
-      userAgent: cleanSupportText(req.headers['user-agent'], 500),
-    }, timezone);
-    res.status(201).json(result);
+    const streak = await applyStreakCheckIn(req);
+    res.json({ streak });
   } catch (error) {
-    if (isMissingTableError(error, STREAK_TABLE)) {
-      return res.json({ streak: serializeStreak(), missingTable: true });
+    if (isMissingStreakTable(error)) {
+      return res.json({
+        missingTable: true,
+        streak: serializeTradingStreak({}, {
+          timezone: CONFIG.STREAK_TIMEZONE,
+          activeSessionMs: Number(req.body?.metadata?.activeSessionMs || 0),
+        }),
+      });
     }
     logDbError(`streak check-in:${req.user.id}`, error);
-    res.status(500).json({ error: error.message || 'Could not update streak' });
+    res.status(500).json({ error: error.message || 'Could not update trading streak' });
   }
 });
 
 app.get('/api/auth/me', async (req, res) => {
-  const pendingReferralCode = firstValue(
-    req.headers['x-fap-referral-code'],
-    req.query.ref,
-    req.query.referralCode,
-  );
-  if (pendingReferralCode) cacheDelete(g_authMeCache, req.user.id);
-  const cachedAuth = pendingReferralCode ? null : cacheGet(g_authMeCache, req.user.id);
-  if (cachedAuth) {
-    return res.json({
-      ...cachedAuth,
-      user: req.user,
-      license: req.license,
-    });
-  }
-
   const keyRows = supabase
     ? await dbFrom('tradevault_user_ea_keys')
         .select('key_prefix,created_at,revoked_at')
@@ -5167,7 +4426,11 @@ app.get('/api/auth/me', async (req, res) => {
   let supportAgent = null;
   let referralCodeRow = null;
   let acceptedReferral = null;
-  let streak = null;
+  const pendingReferralCode = firstValue(
+    req.headers['x-fap-referral-code'],
+    req.query.ref,
+    req.query.referralCode,
+  );
 
   try {
     supportAgent = await getSupportAgent(req.user.id, req.user.email, req.user.name);
@@ -5182,13 +4445,7 @@ app.get('/api/auth/me', async (req, res) => {
     logDbError(`auth referral:${req.user.id}`, error);
   }
 
-  try {
-    streak = serializeStreak(await loadStreakRow(req.user.id) || { user_id: req.user.id, timezone: getRequestTimezone(req) });
-  } catch (error) {
-    if (!isMissingTableError(error, STREAK_TABLE)) logDbError(`auth streak:${req.user.id}`, error);
-  }
-
-  const payload = {
+  res.json({
     user: req.user,
     eaKey: keyRows.data?.[0] || null,
     license: req.license,
@@ -5203,18 +4460,7 @@ app.get('/api/auth/me', async (req, res) => {
       bonusDays: CONFIG.REFERRAL_BONUS_DAYS,
       accepted: acceptedReferral ? serializeReferralRow(acceptedReferral) : null,
     } : null,
-    streak,
-  };
-
-  if (!pendingReferralCode) {
-    cacheSet(g_authMeCache, req.user.id, {
-      ...payload,
-      user: undefined,
-      license: undefined,
-    }, CONFIG.AUTH_ME_CACHE_MS);
-  }
-
-  res.json(payload);
+  });
 });
 
 app.get('/api/referrals/me', async (req, res) => {
@@ -5261,7 +4507,6 @@ app.post('/api/auth/ea-key/rotate', async (req, res) => {
   if (error) return res.status(500).json({ error: error.message });
 
   g_eaKeyOwners.set(keyHash, req.user.id);
-  cacheDelete(g_authMeCache, req.user.id);
   res.json({
     apiKey: secret,
     keyPrefix,
@@ -5580,51 +4825,6 @@ app.get('/api/support/admin/insights', async (req, res) => {
   const agent = await requireSupportAgent(req, res);
   if (!agent) return;
 
-  const agentPayload = {
-    userId: agent.user_id,
-    role: agent.role,
-    displayName: agent.display_name || req.user.name,
-  };
-  const forceRefresh = ['1', 'true', 'yes'].includes(String(req.query.refresh || '').toLowerCase());
-  const weeklyKey = getAdminInsightsWeekKey();
-  if (
-    !forceRefresh &&
-    CONFIG.ADMIN_INSIGHTS_WEEKLY_CACHE &&
-    g_adminInsightsCache?.weekKey === weeklyKey &&
-    g_adminInsightsCache?.payload
-  ) {
-    return res.json({
-      ...cloneJSON(g_adminInsightsCache.payload),
-      agent: agentPayload,
-      cached: true,
-      cacheSource: 'memory-weekly',
-    });
-  }
-  if (!forceRefresh && CONFIG.ADMIN_INSIGHTS_WEEKLY_CACHE) {
-    const fileCache = loadAdminInsightsCacheFile();
-    if (fileCache.week_key === weeklyKey && fileCache.payload) {
-      g_adminInsightsCache = {
-        weekKey: weeklyKey,
-        payload: cloneJSON(fileCache.payload),
-        expiresAt: Date.now() + CONFIG.ADMIN_INSIGHTS_CACHE_MS,
-      };
-      return res.json({
-        ...cloneJSON(fileCache.payload),
-        agent: agentPayload,
-        cached: true,
-        cacheSource: 'file-weekly',
-      });
-    }
-  }
-  if (!forceRefresh && g_adminInsightsCache && g_adminInsightsCache.expiresAt > Date.now()) {
-    return res.json({
-      ...cloneJSON(g_adminInsightsCache.payload),
-      agent: agentPayload,
-      cached: true,
-      cacheSource: 'memory',
-    });
-  }
-
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
@@ -5647,36 +4847,33 @@ app.get('/api/support/admin/insights', async (req, res) => {
   };
 
   try {
-    const [overviewRows, ticketRows, rollupRows, feedbackRows, activityTodayRows, activityRecentRows, streakRows] = await Promise.all([
+    const [overviewRows, ticketRows, feedbackRows, activityTodayRows, activityRecentRows, streakRows] = await Promise.all([
       safeSelect('admin overview', dbFrom('forexanalyzer_client_overview')
-        .select('user_id,email,full_name,nickname,plan_mode,license_status,trial_started_at,trial_ends_at,grace_ends_at,paid_until,account_id,connection_method,broker,account_role,balance,equity,open_trades,closed_trades,ea_status,last_seen_at,snapshot_updated_at,account_type,account_environment,currency,leverage,server_name,running_profit')
+        .select('*')
         .order('snapshot_updated_at', { ascending: false })
         .limit(1000)),
       safeSelect('admin ticket stats', dbFrom(SUPPORT_TICKET_TABLE)
         .select('id,user_id,status,priority,category,last_message_at,created_at,updated_at')
         .order('last_message_at', { ascending: false })
         .limit(1000)),
-      safeSelect('admin archived ticket stats', dbFrom(SUPPORT_TICKET_ROLLUP_TABLE)
-        .select('status,priority,category,message_count,archived_at')
-        .order('archived_at', { ascending: false })
-        .limit(5000)),
       safeSelect('admin feedback stats', dbFrom(FEEDBACK_TABLE)
         .select('id,user_id,email,page_path,score,responses,created_at')
         .order('created_at', { ascending: false })
         .limit(500)),
       safeSelect('admin activity today', dbFrom(ACTIVITY_TABLE)
-        .select('user_id,page_path,created_at')
+        .select('id,user_id,page_path,page_title,created_at')
         .eq('event_type', 'page_view')
         .gte('created_at', startOfToday.toISOString())
         .order('created_at', { ascending: false })
-        .limit(2000)),
+        .limit(5000)),
       safeSelect('admin activity recent', dbFrom(ACTIVITY_TABLE)
-        .select('user_id,page_path,created_at')
+        .select('id,user_id,page_path,page_title,created_at')
         .eq('event_type', 'page_view')
         .order('created_at', { ascending: false })
-        .limit(1000)),
-      safeSelect('admin streak stats', dbFrom(STREAK_TABLE)
-        .select('user_id,current_streak,longest_streak,last_active_date,last_seen_at,timezone,status,monthly_restore_period,monthly_restore_count,total_restores_used,restore_limit,milestones_sent')
+        .limit(2000)),
+      safeSelect('admin streaks', dbFrom(STREAK_TABLE)
+        .select('*')
+        .order('last_seen_at', { ascending: false })
         .limit(1000)),
     ]);
 
@@ -5696,6 +4893,7 @@ app.get('/api/support/admin/insights', async (req, res) => {
     }
     const accountsByUser = new Map();
     const licenseByUser = new Map();
+    const streakByUser = new Map();
 
     for (const row of overviewRows) {
       if (!row.user_id) continue;
@@ -5708,9 +4906,8 @@ app.get('/api/support/admin/insights', async (req, res) => {
       }
     }
 
-    const streakByUser = new Map();
     for (const row of streakRows) {
-      if (row.user_id) streakByUser.set(row.user_id, row);
+      if (row.user_id && !streakByUser.has(row.user_id)) streakByUser.set(row.user_id, row);
     }
 
     const ticketStatsByUser = new Map();
@@ -5724,21 +4921,6 @@ app.get('/api/support/admin/insights', async (req, res) => {
       if (stats[status] !== undefined) stats[status] += 1;
       ticketStatsByUser.set(row.user_id, stats);
     }
-    const archivedTicketTotals = { total: 0, resolved: 0, closed: 0, urgent: 0, messages: 0 };
-    for (const row of rollupRows) {
-      archivedTicketTotals.total += 1;
-      if (archivedTicketTotals[row.status] !== undefined) archivedTicketTotals[row.status] += 1;
-      if (row.priority === 'urgent') archivedTicketTotals.urgent += 1;
-      archivedTicketTotals.messages += Number(row.message_count || 0);
-    }
-    const solvedTicketCount =
-      ticketTotals.resolved +
-      ticketTotals.closed +
-      archivedTicketTotals.resolved +
-      archivedTicketTotals.closed;
-    ticketTotals.archived = archivedTicketTotals.total;
-    ticketTotals.archivedMessages = archivedTicketTotals.messages;
-    ticketTotals.historicalSolved = solvedTicketCount;
 
     const feedbackStatsByUser = new Map();
     const feedbackScores = [];
@@ -5790,7 +4972,7 @@ app.get('/api/support/admin/insights', async (req, res) => {
         tickets: ticketStatsByUser.get(userId) || {},
         feedback: feedbackStatsByUser.get(userId) || {},
         accounts: accountsByUser.get(userId) || [],
-        streak: streakByUser.get(userId) || { user_id: userId, timezone: profiles.get(userId)?.timezone || CONFIG.STREAK_TIMEZONE },
+        streak: streakByUser.get(userId) || null,
       });
     }).sort((a, b) => {
       const bSeen = b.lastSeenAt ? new Date(b.lastSeenAt).getTime() : 0;
@@ -5799,8 +4981,6 @@ app.get('/api/support/admin/insights', async (req, res) => {
     });
 
     const accounts = users.flatMap(user => user.accounts.map(account => ({ ...account, userId: user.userId, userName: user.name, userEmail: user.email })));
-    const liveAccountRows = accounts.filter(account => account.environment === 'live');
-    const demoAccountRows = accounts.filter(account => account.environment === 'demo');
     const activeTodayUsers = new Set(activityTodayRows.map(row => row.user_id).filter(Boolean));
     const activeLastHourUsers = new Set(activityTodayRows
       .filter(row => row.user_id && row.created_at >= oneHourAgo)
@@ -5810,8 +4990,12 @@ app.get('/api/support/admin/insights', async (req, res) => {
       .sort((a, b) => b.views - a.views)
       .slice(0, 20);
 
-    const payload = {
-      agent: agentPayload,
+    res.json({
+      agent: {
+        userId: agent.user_id,
+        role: agent.role,
+        displayName: agent.display_name || req.user.name,
+      },
       generatedAt: new Date().toISOString(),
       metrics: {
         totalUsers: users.length,
@@ -5820,20 +5004,13 @@ app.get('/api/support/admin/insights', async (req, res) => {
         pageViewsToday: activityTodayRows.length,
         mostUsedPage: pageUsage[0]?.path || '',
         connectedAccounts: accounts.length,
-        liveAccounts: liveAccountRows.length,
-        demoAccounts: demoAccountRows.length,
+        liveAccounts: accounts.filter(account => account.environment === 'live').length,
+        demoAccounts: accounts.filter(account => account.environment === 'demo').length,
         onlineAccounts: accounts.filter(account => account.online).length,
         totalTrackedBalance: accounts.reduce((sum, account) => sum + (Number(account.balance) || 0), 0),
         totalTrackedEquity: accounts.reduce((sum, account) => sum + (Number(account.equity) || 0), 0),
-        liveTrackedBalance: liveAccountRows.reduce((sum, account) => sum + (Number(account.balance) || 0), 0),
-        demoTrackedBalance: demoAccountRows.reduce((sum, account) => sum + (Number(account.balance) || 0), 0),
-        liveTrackedEquity: liveAccountRows.reduce((sum, account) => sum + (Number(account.equity) || 0), 0),
-        demoTrackedEquity: demoAccountRows.reduce((sum, account) => sum + (Number(account.equity) || 0), 0),
         openTickets: ticketTotals.open + ticketTotals.pending,
         urgentTickets: ticketTotals.urgent,
-        solvedTickets: solvedTicketCount,
-        archivedTickets: archivedTicketTotals.total,
-        archivedSupportMessages: archivedTicketTotals.messages,
         feedbackCount: feedbackRows.length,
         averageFeedbackScore: feedbackScores.length
           ? feedbackScores.reduce((sum, score) => sum + score, 0) / feedbackScores.length
@@ -5854,18 +5031,7 @@ app.get('/api/support/admin/insights', async (req, res) => {
         responses: row.responses || {},
         createdAt: row.created_at,
       })),
-      cached: false,
-    };
-
-    g_adminInsightsCache = {
-      weekKey: weeklyKey,
-      payload: cloneJSON(payload),
-      expiresAt: Date.now() + CONFIG.ADMIN_INSIGHTS_CACHE_MS,
-    };
-    if (CONFIG.ADMIN_INSIGHTS_WEEKLY_CACHE) {
-      saveAdminInsightsCacheFile(weeklyKey, payload);
-    }
-    res.json(payload);
+    });
   } catch (error) {
     res.status(500).json({ error: error.message || 'Could not load admin insights' });
   }
@@ -5981,10 +5147,7 @@ app.delete('/api/share-links/:token', async (req, res) => {
   res.json({ success: true });
 });
 
-app.get('/api/accounts', async (req, res) => {
-  await restoreUserAccountsFromDatabase(req.user.id, 'api-accounts');
-  res.json(buildMultiAccountSnapshot(req.user.id));
-});
+app.get('/api/accounts', (req, res) => res.json(buildMultiAccountSnapshot(req.user.id)));
 
 app.get('/api/direct-accounts', async (req, res) => {
   const rows = [...g_directAccounts.values()]
@@ -6218,15 +5381,6 @@ app.delete('/api/accounts/:accountId', async (req, res) => {
     await clearAccountOwner(accountId);
     await deleteAccountSnapshot(accountId);
     await revokeShareLinksForAccount(accountId, req.user.id);
-    clearAdminInsightsCache();
-    io.to('support:agents').emit('ADMIN_ACCOUNT_DELETED', {
-      type: 'ADMIN_ACCOUNT_DELETED',
-      data: {
-        accountId,
-        userId: req.user.id,
-        generatedAt: new Date().toISOString(),
-      },
-    });
     res.json({ success: true });
   } catch (err) {
     console.error(`[Account] Delete failed for ${accountId}: ${err.message}`);
@@ -6761,7 +5915,6 @@ app.get('/api/debug', (req, res) => {
       enabled: DATABASE_ENABLED,
       schema:  CONFIG.SUPABASE_SCHEMA,
       url:     CONFIG.SUPABASE_URL ? CONFIG.SUPABASE_URL.replace(/\/\/([^./]+)/, '//***') : null,
-      egress:  getSupabaseEgressSummary(),
     },
     settings_dir:      CONFIG.SETTINGS_DIR,
     settings_files:    fs.existsSync(CONFIG.SETTINGS_DIR)
@@ -6986,16 +6139,30 @@ const hydrateAccountSnapshots = async () => {
 
   try {
     const { data, error } = await dbFrom('tradevault_account_snapshots')
-      .select('account_id,owner_user_id,config,processed_data,ea_status,push_counts,last_seen_ms,last_settings_fetch_ms,last_error,updated_at')
-      .order('updated_at', { ascending: false })
-      .limit(CONFIG.SNAPSHOT_HYDRATE_LIMIT);
+      .select('account_id,owner_user_id,config,raw_live_data,raw_static_data,processed_data,ea_status,push_counts,last_seen_ms,last_settings_fetch_ms,last_error,updated_at');
     if (error) throw error;
 
     for (const row of data || []) {
-      if (restoreAccountSnapshotRow(row)) {
-        const state = g_accounts.get(String(row.account_id || ''));
-        if (state) persistLocalAccountSnapshotNow(state, row);
+      if ((row.owner_user_id && isAccountDeletedForUser(row.owner_user_id, row.account_id)) || isAccountDeletedByAnyUser(row.account_id)) {
+        continue;
       }
+      if (!g_accounts.has(row.account_id)) {
+        registerAccount(row.account_id, row.config || {});
+      }
+      if (row.owner_user_id && !g_accountOwners.has(row.account_id)) {
+        g_accountOwners.set(row.account_id, row.owner_user_id);
+      }
+      const state = g_accounts.get(row.account_id);
+      Object.assign(state.config, row.config || {});
+      state.rawLiveData       = row.raw_live_data || null;
+      state.rawStaticData     = row.raw_static_data || null;
+      state.processedData     = row.processed_data || null;
+      state.eaStatus          = row.ea_status || null;
+      state.pushCounts        = row.push_counts || { live: 0, static: 0, status: 0 };
+      state.lastSeen          = row.last_seen_ms || null;
+      state.lastSettingsFetch = row.last_settings_fetch_ms || null;
+      state.lastError         = row.last_error || null;
+      state.online            = false;
     }
 
     console.log(`[Supabase] Restored ${data?.length || 0} latest account snapshot(s).`);
@@ -7008,13 +6175,7 @@ const startServer = async () => {
   await hydrateDatabase();
   await hydrateDirectAccounts();
   loadAccountRegistry();
-  hydrateLocalAccountSnapshots();
-  if (CONFIG.SUPABASE_STARTUP_SNAPSHOT_HYDRATE) {
-    await hydrateAccountSnapshots();
-  } else {
-    console.log('[Supabase] Startup account snapshot hydrate skipped. User login will restore from Supabase only when local cache is missing.');
-  }
-  startRetentionEmailJobs();
+  await hydrateAccountSnapshots();
 
   server.listen(CONFIG.PORT, '0.0.0.0', () => {
   console.log('');
